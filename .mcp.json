@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "react-assistant": {
+      "command": "C:\\Users\\user\\Documents\\workspace\\study\\ai_model\\venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\user\\Documents\\workspace\\study\\ai_model\\src\\mcp_server.py"
+      ],
+      "cwd": "C:\\Users\\user\\Documents\\workspace\\study\\ai_model"
+    }
+  }
+}

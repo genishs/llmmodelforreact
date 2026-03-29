@@ -1,0 +1,42 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# 모델 weights (수 GB → Git LFS 또는 제외)
+models/base/
+models/qwen-react-lora-7b*/
+
+# 학습 체크포인트 (중간 저장 파일)
+models/*/checkpoint-*/
+models/*/optimizer.pt
+models/*/rng_state.pth
+models/*/scheduler.pt
+
+# 학습 데이터 (생성 가능하므로 제외)
+data/processed/
+
+# 환경 설정
+.env
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 로그
+*.log
+runs/
+wandb/

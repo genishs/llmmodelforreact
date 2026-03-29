@@ -1,0 +1,43 @@
+# Qwen2.5-Coder-7B LoRA Fine-tuning (48GB GPU 기준)
+
+model:
+  base_model: "./models/base/qwen2.5-coder-7b"
+  model_type: "causal_lm"
+
+lora:
+  r: 16
+  lora_alpha: 32
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  lora_dropout: 0.05
+  bias: "none"
+
+training:
+  output_dir: "./models/qwen-react-lora-7b-v1"
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8    # 실질 batch_size = 8
+  learning_rate: 1.0e-4             # 7B는 더 낮은 lr 권장
+  warmup_ratio: 0.03
+  lr_scheduler_type: "cosine"
+  logging_steps: 10
+  save_steps: 50
+  save_total_limit: 2
+  fp16: false
+  bf16: false                        # DirectML에서는 false
+  gradient_checkpointing: false      # CPU 학습 시 PEFT와 충돌 → false (64GB RAM으로 충분)
+  dataloader_num_workers: 0          # Windows에서는 0 권장
+  remove_unused_columns: false
+
+data:
+  train_file: "./data/processed/react_train.jsonl"
+  val_file: "./data/processed/react_val.jsonl"
+  max_seq_length: 1024              # 7B는 메모리 절약을 위해 2048→1024
+  dataset_text_field: "text"
+
+quantization:
+  load_in_4bit: false
+  load_in_8bit: false
