@@ -1,0 +1,34 @@
+# Python 3.11 기준
+# AMD GPU (DirectML) + Windows 환경
+
+# PyTorch (CPU 버전 먼저 설치 후 DirectML 추가)
+torch>=2.3.0
+torchvision
+torchaudio
+
+# AMD GPU 가속 (Windows)
+torch-directml>=0.2.4
+
+# LLM 핵심
+transformers>=4.44.0
+datasets>=2.20.0
+peft>=0.12.0
+accelerate>=0.33.0
+tokenizers>=0.19.0
+sentencepiece
+
+# 학습 유틸
+PyYAML>=6.0
+tqdm
+
+# 시스템 모니터링
+psutil
+
+# Jupyter (실험용)
+jupyter
+ipykernel
+ipywidgets
+
+# 데이터 처리
+pandas
+numpy
