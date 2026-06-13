@@ -95,6 +95,11 @@ python src/train_directml.py --dtype fp16 --seq 256
 - v4: 합성 데이터를 2차로 +87개(synth2: useThrottle/Drawer/Combobox/TreeView 등) 확대 →
   학습셋 92→169(학습152/검증17). **val_loss 5.44→4.06**(매 epoch 하강 5.01→4.15→4.06),
   57step/18분. 데이터 2배가 25% 추가 개선. **서빙 기본 모델 = v4.**
+- v5: 합성 3차 +100개(synth3: CommandPalette/useWebSocket/Kanban 등) → 학습셋 169→254
+  (학습228/검증26). val_loss 4.92→4.24→**4.14**. 85step/27분.
+  **★ 데이터 확대 plateau 도달**: 92→169은 5.44→4.06(큰 개선)이나 169→254는 4.06→4.14로
+  **개선 없음**(val셋 재분할 노이즈 범위 내 동률). 동일 스타일 합성 데이터 추가는 수익 소진.
+  더 낮추려면 *다른 분포*(복잡/실무 컴포넌트, 멀티파일 컨텍스트) 또는 epoch/LR 튜닝 필요.
 
 - `build_dataset_v2.py`: GitHub 중복지시문 제거 + 출력 토큰 한도(짧은 것만) + 합성 병합.
 - 합성 데이터 `data/handcrafted_synth.jsonl`(60개): Sonnet 경량 워커가 생성. useToggle/
