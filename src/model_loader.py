@@ -19,7 +19,7 @@ from dml_loader import stream_load_to_device
 # 프로젝트 루트(= src의 상위) 기준 절대 경로
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_MODEL_PATH = os.path.join(_ROOT, "models", "base", "qwen2.5-coder-7b")
-ADAPTER_PATH = os.path.join(_ROOT, "models", "qwen-react-lora-7b-v3")
+ADAPTER_PATH = os.path.join(_ROOT, "models", "qwen-react-lora-7b-v4")
 DTYPE = torch.float16
 
 _model = None
