@@ -41,11 +41,17 @@ def main():
     args = [a for a in sys.argv[1:]]
     use_base = "--base" in args
     args = [a for a in args if a != "--base"]
+    # --adapter DIR 로 어댑터 경로 지정(기본=config output_dir)
+    adapter_override = None
+    if "--adapter" in args:
+        i = args.index("--adapter")
+        adapter_override = args[i + 1]
+        del args[i:i + 2]
     prompts = args if args else DEFAULT_PROMPTS
 
     config = load_config()
     base = config["model"]["base_model"]
-    adapter_dir = config["training"]["output_dir"]
+    adapter_dir = adapter_override or config["training"]["output_dir"]
     device = torch_directml.device()
     dtype = torch.float16
 
