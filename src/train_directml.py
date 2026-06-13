@@ -166,6 +166,7 @@ def main():
                     help="fp16 손실 스케일(언더플로 방지)")
     ap.add_argument("--grad-ckpt", action="store_true",
                     help="gradient checkpointing(DirectML에서는 비권장)")
+    ap.add_argument("--out", default="", help="출력 디렉터리 오버라이드(0=config)")
     args = ap.parse_args()
 
     config = load_config(args.config)
@@ -189,6 +190,9 @@ def main():
     max_len = args.seq if args.seq > 0 else dcfg["max_seq_length"]
 
     train_loader = make_loader(dcfg["train_file"], tok, max_len, bs, shuffle=True)
+    smoke = args.smoke > 0
+    val_loader = (None if smoke
+                  else make_loader(dcfg["val_file"], tok, max_len, bs, shuffle=False))
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     optim = torch.optim.AdamW(trainable, lr=float(tcfg["learning_rate"]), eps=1e-4)
@@ -204,10 +208,24 @@ def main():
         f"batches/epoch={len(train_loader)} accum={accum} "
         f"optim_steps≈{total_steps if not smoke else args.smoke}")
 
+    @torch.no_grad()
+    def eval_loss():
+        if val_loader is None:
+            return None
+        model.eval()
+        tot, n = 0.0, 0
+        for b in val_loader:
+            b = {k: v.to(device) for k, v in b.items()}
+            tot += model(**b).loss.item()
+            n += 1
+        model.train()
+        return tot / max(n, 1)
+
     model.train()
     run_start = time.time()
     step, micro = 0, 0
     step_times = []
+    win_loss = 0.0  # accum 윈도우 손실 합(평균 로깅용)
     t_step = time.time()
     stop = False
 
@@ -216,6 +234,7 @@ def main():
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             out = model(**batch)
+            win_loss += out.loss.item()
             (out.loss * SCALE / accum).backward()
             micro += 1
 
@@ -237,7 +256,10 @@ def main():
                 step += 1
                 dt_step = time.time() - t_step
                 step_times.append(dt_step)
-                log(f"step {step} | loss {out.loss.item():.4f} | "
+                # 윈도우 평균 손실(=실질 step 손실). 단일 마이크로배치가 아니라 accum 평균.
+                avg_loss = win_loss / accum
+                win_loss = 0.0
+                log(f"step {step} | loss(avg{accum}) {avg_loss:.4f} | "
                     f"{dt_step:.1f}s/step | RAM가용 {ram_avail_gb():.1f}GB | "
                     f"CPU {psutil.cpu_percent()}%{' | SKIP(nan)' if bad else ''}")
                 t_step = time.time()
@@ -246,6 +268,9 @@ def main():
                     break
         if stop:
             break
+        vl = eval_loss()
+        if vl is not None:
+            log(f"  [epoch {ep+1}/{epochs}] val_loss {vl:.4f}")
     if skipped:
         log(f"  (참고: nan/inf로 건너뛴 step {skipped}개)")
 
@@ -260,7 +285,7 @@ def main():
 
     # 저장: DirectML 텐서는 safetensors가 storage 조회 불가(OpaqueTensorImpl)이므로
     # PEFT save_pretrained가 실패한다. 어댑터 가중치를 CPU/fp32로 옮겨 직접 저장.
-    out_dir = tcfg["output_dir"]
+    out_dir = args.out if args.out else tcfg["output_dir"]
     os.makedirs(out_dir, exist_ok=True)
     from peft import get_peft_model_state_dict
     import safetensors.torch as st
