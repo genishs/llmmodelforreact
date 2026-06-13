@@ -31,45 +31,76 @@ from transformers import AutoTokenizer
 TOK = AutoTokenizer.from_pretrained("./models/base/qwen2.5-coder-7b", trust_remote_code=True)
 
 
+SYNTH_PATH = "./data/handcrafted_synth.jsonl"
+
+
 def full_tok_len(item):
     return len(TOK(format_alpaca(item)["text"])["input_ids"])
 
 
-def curate(cap):
+def out_tok_len(item):
+    return len(TOK(item.get("output", ""))["input_ids"])
+
+
+def load_synth(path=SYNTH_PATH):
+    items = []
+    if not Path(path).exists():
+        return items
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    items.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return items
+
+
+def curate(cap, gh_out_cap):
+    """혼합 전략: 핸드크래프트 + 합성 + '짧은' GitHub(출력 토큰 한도 이하)만.
+
+    GitHub 스크랩은 '짧은 지시→거대 실소스'라 본질적으로 어려운 신호 →
+    출력이 짧은(=집중된) 것만 채택하고 중복 지시문은 제거.
+    """
     gh = load_github_data()
-    # 1) 지시문별로 묶고, 토큰 한도 내에서 가장 긴(=가장 완결된) 출력 1개 선택
     by_instr = {}
     for x in gh:
         if not quality_filter(x):
             continue
-        instr = x.get("instruction", "").strip()
-        by_instr.setdefault(instr, []).append(x)
+        by_instr.setdefault(x.get("instruction", "").strip(), []).append(x)
 
-    gh_clean, dropped_oversize, dropped_dup = [], 0, 0
+    gh_clean, dropped_long, dropped_dup = [], 0, 0
     for instr, cands in by_instr.items():
-        fit = [(full_tok_len(c), c) for c in cands]
-        fit = [(n, c) for n, c in fit if n <= cap]
+        # 출력이 짧고(≤gh_out_cap) 전체도 한도 내인 것 중 가장 짧은(가장 집중된) 출력
+        fit = [(out_tok_len(c), c) for c in cands
+               if out_tok_len(c) <= gh_out_cap and full_tok_len(c) <= cap]
         if not fit:
-            dropped_oversize += 1
+            dropped_long += 1
             continue
         dropped_dup += len(cands) - 1
-        gh_clean.append(max(fit, key=lambda t: t[0])[1])  # 한도 내 최장 출력
+        gh_clean.append(min(fit, key=lambda t: t[0])[1])
 
-    # 2) 핸드크래프트(고품질) — 한도 내인 것 유지
     hc = [x for x in HANDCRAFTED_QA if quality_filter(x) and full_tok_len(x) <= cap]
+    synth = [x for x in load_synth()
+             if x.get("output") and full_tok_len(x) <= cap]
 
-    return hc, gh_clean, dict(gh_total=len(gh), gh_unique=len(by_instr),
-                              dropped_oversize=dropped_oversize, dropped_dup=dropped_dup)
+    stats = dict(gh_total=len(gh), gh_unique=len(by_instr),
+                 dropped_long=dropped_long, dropped_dup=dropped_dup,
+                 synth_loaded=len(load_synth()), synth_kept=len(synth))
+    return hc, synth, gh_clean, stats
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cap", type=int, default=384, help="전체 프롬프트 최대 토큰")
+    ap.add_argument("--gh-out-cap", type=int, default=200,
+                    help="GitHub 샘플 출력 최대 토큰(짧은 것만 채택)")
     ap.add_argument("--out", default="./data/processed")
     args = ap.parse_args()
 
-    hc, gh_clean, stats = curate(args.cap)
-    all_data = hc + gh_clean
+    hc, synth, gh_clean, stats = curate(args.cap, args.gh_out_cap)
+    all_data = hc + synth + gh_clean
     random.seed(42)
     random.shuffle(all_data)
     split = max(1, int(len(all_data) * 0.9))
@@ -91,13 +122,14 @@ def main():
             for item in data:
                 f.write(json.dumps(format_alpaca(item), ensure_ascii=False) + "\n")
 
-    print("=" * 56)
-    print(f"큐레이션 v2 (cap={args.cap} 토큰)")
-    print(f"  GitHub 원본 {stats['gh_total']}개 → 고유지시문 {stats['gh_unique']}개")
-    print(f"  중복출력 제거 {stats['dropped_dup']}개, 한도초과 지시문 제거 {stats['dropped_oversize']}개")
-    print(f"  GitHub 채택 {len(gh_clean)}개 + 핸드크래프트 {len(hc)}개 = {len(all_data)}개")
-    print(f"  학습 {len(train)} / 검증 {len(val)}  →  {out}")
-    print("=" * 56)
+    print("=" * 60)
+    print(f"큐레이션 v2 혼합 (cap={args.cap}, gh_out_cap={args.gh_out_cap} 토큰)")
+    print(f"  GitHub {stats['gh_total']}개 → 고유 {stats['gh_unique']}개 "
+          f"(중복 {stats['dropped_dup']}, 출력김 {stats['dropped_long']} 제거) → 채택 {len(gh_clean)}개")
+    print(f"  합성 {stats['synth_loaded']}개 로드 → 채택 {stats['synth_kept']}개")
+    print(f"  핸드크래프트 {len(hc)}개")
+    print(f"  합계 {len(all_data)}개 → 학습 {len(train)} / 검증 {len(val)}  →  {out}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

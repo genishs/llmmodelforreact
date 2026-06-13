@@ -74,6 +74,30 @@ python src/train_directml.py --dtype fp16 --seq 256
 - 학습 데이터의 한글이 깨져 있었음에도(인코딩 mojibake) 한글 프롬프트에 정상 응답.
 - 실행: `python src/inference_7b.py` | `--base`(대조군) | `"프롬프트..."`(직접 지정).
 
+## 데이터 큐레이션·재학습 (v1 → v2 → v3)
+
+초기 7B(v1)는 seq256·원본 84개로 loss가 크게 출렁였다. 원인 분석:
+- **데이터는 손상 아님**(UTF-8 정상). 콘솔 mojibake는 표시 문제였음.
+- **loss 출렁임의 주원인은 로깅 아티팩트** — step당 accum 8개 중 마지막 1개 손실만 찍었음.
+  → `train_directml.py`를 accum 윈도우 평균 손실 + epoch별 val_loss로 개선.
+- **GitHub 스크랩(74개)이 본질적으로 어려운 신호** — 짧고 거의 동일한 지시문
+  (`X 컴포넌트 작성해줘`)에 거대한 임의 라이브러리 소스를 매핑(같은 지시문→모순 정답,
+  출력 51%가 256토큰 초과로 잘림).
+
+개선(seq 384 채택 — 7B에서 plateau 38.7GB로 fit 확인):
+
+| 버전 | 데이터 구성 | 개수 | val_loss |
+|------|-------------|------|----------|
+| v2 | 짧은 GitHub 큐레이션만(dedup+길이필터) | 46 | 7.72 |
+| **v3** | **합성 59 + 짧은 GitHub 27 + 핸드크래프트 6** | **92** | **5.44** |
+
+- `build_dataset_v2.py`: GitHub 중복지시문 제거 + 출력 토큰 한도(짧은 것만) + 합성 병합.
+- 합성 데이터 `data/handcrafted_synth.jsonl`(60개): Sonnet 경량 워커가 생성. useToggle/
+  usePrevious/ErrorBoundary/Tabs/usePagination/useAuth 등 60개 주제, 지시→집중 정답(≤~280토큰).
+- v3 val_loss가 매 epoch 하강(6.44→5.59→5.44), v2 대비 큰 개선. 학습 30step/9.6분.
+- 재현: `python src/build_dataset_v2.py --cap 384 --gh-out-cap 200` →
+  `python src/train_directml.py --dtype fp16 --seq 384 --out ./models/qwen-react-lora-7b-v3`
+
 ## 한계·다음 단계
 
 - seq 256 고정 패딩이라 **긴 샘플은 잘림** → 품질 손해. fp16 + 소배치로 **loss 변동이 큼**
