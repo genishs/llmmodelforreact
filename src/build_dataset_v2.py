@@ -31,7 +31,7 @@ from transformers import AutoTokenizer
 TOK = AutoTokenizer.from_pretrained("./models/base/qwen2.5-coder-7b", trust_remote_code=True)
 
 
-SYNTH_PATH = "./data/handcrafted_synth.jsonl"
+SYNTH_GLOB = "./data/handcrafted_synth*.jsonl"  # 여러 합성 파일 병합
 
 
 def full_tok_len(item):
@@ -42,18 +42,23 @@ def out_tok_len(item):
     return len(TOK(item.get("output", ""))["input_ids"])
 
 
-def load_synth(path=SYNTH_PATH):
-    items = []
-    if not Path(path).exists():
-        return items
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
+def load_synth(glob_pat=SYNTH_GLOB):
+    import glob as _glob
+    items, seen = [], set()
+    for path in sorted(_glob.glob(glob_pat)):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    items.append(json.loads(line))
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                instr = obj.get("instruction", "").strip()
+                if instr and instr not in seen:  # 파일 간 지시문 중복 제거
+                    seen.add(instr)
+                    items.append(obj)
     return items
 
 
