@@ -26,8 +26,13 @@ AMD Ryzen AI Max+ 392 (12코어, Radeon 8060S) 위에서 직접 학습하고 실
 | 학습 방식 | LoRA (rank=16, alpha=32) |
 | 학습 가능 파라미터 | 약 4.4M / 전체 1.55B (0.28%) |
 | 학습 데이터 | React Q&A 84개 (직접 작성 10 + GitHub 수집 74) |
-| 최신 모델 | `models/qwen-react-lora-v4` |
+| 최신 모델(1.5B) | `models/qwen-react-lora-v4` |
+| **서빙 모델(API/MCP)** | **`models/qwen-react-lora-7b-v3`** (Qwen2.5-Coder-**7B** + LoRA, fp16) |
 | GPU 백엔드 | DirectML (AMD GPU on Windows) |
+
+> API 서버(`serve_api.py`)와 MCP 서버(`mcp_server.py`)는 `model_loader.py`를 통해
+> **7B v3**를 DirectML에 fp16 스트리밍 적재해 서빙합니다(VRAM ~31GB). 7B 학습·데이터
+> 큐레이션 상세는 `docs/training-benchmark-7b.md` 참고.
 
 ---
 
