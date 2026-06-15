@@ -103,6 +103,15 @@ def generate(instruction: str, input_text: str = "", max_new_tokens: int = 512) 
     inputs = tokenizer(prompt, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
+    # FIM/특수 토큰 누수 방지: 이 토큰들을 만나면 생성 종료(eos 취급)
+    stop_ids = [tokenizer.eos_token_id]
+    for tk in ["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>",
+               "<|repo_name|>", "<|file_sep|>", "<|endoftext|>"]:
+        tid = tokenizer.convert_tokens_to_ids(tk)
+        if isinstance(tid, int) and tid >= 0 and tid != tokenizer.unk_token_id:
+            stop_ids.append(tid)
+    stop_ids = list(dict.fromkeys(stop_ids))  # 중복 제거
+
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -111,6 +120,7 @@ def generate(instruction: str, input_text: str = "", max_new_tokens: int = 512) 
             do_sample=True,
             top_p=0.9,
             pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=stop_ids,
             repetition_penalty=1.1,
         )
 
