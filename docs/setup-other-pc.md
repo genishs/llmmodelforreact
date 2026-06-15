@@ -70,6 +70,25 @@ set REACT_ASSISTANT_MODEL=7b        # (Linux: export REACT_ASSISTANT_MODEL=7b)
   4060에서 첫 실행 시 확인 필요. 4비트는 `bitsandbytes`가 CUDA를 정상 인식해야 함
   (`python -c "import bitsandbytes"` 로 점검). 문제 시 1.5B fp16부터 시작 권장.
 
+## 7B QLoRA 재학습 (seq 1024, 잘림 없이) — 4060의 핵심 이점
+
+DirectML(AMD)에선 VRAM 한계로 seq 256/384에 묶여 데이터의 51%가 잘렸다. CUDA에선
+4비트 양자화로 가중치가 ~5GB라 VRAM 여유가 생겨 **seq 1024(잘림 없이)** 학습이 가능하다.
+
+```bash
+# 1) 데이터 빌드 (seq 1024에 맞춰 토큰 한도 상향 → 더 많은 샘플이 잘림 없이 포함)
+python src/build_dataset_v2.py --cap 1024 --gh-out-cap 512
+
+# 2) QLoRA 학습 (4비트, gradient checkpointing, paged AdamW 8bit)
+python src/train_qlora.py --seq 1024 --out ./models/qwen-react-lora-7b-qlora
+```
+
+- `train_qlora.py`는 HF Trainer + bitsandbytes(nf4) + peft 표준 레시피. 8GB에 맞춰
+  gradient checkpointing·paged_adamw_8bit 사용. (DirectML의 커스텀 루프와 달리 표준 도구라 안정적.)
+- 학습 후 서빙: `model_loader.py`의 7b ADAPTER_PATH를 `qwen-react-lora-7b-qlora`로 바꾸거나,
+  그 경로를 가리키게 하고 `REACT_ASSISTANT_MODEL=7b`로 실행.
+- bf16을 쓰려면 train_qlora.py 안의 `compute_dtype`/`fp16`/`bf16` 주석 참고(4060은 bf16 지원).
+
 ## 품질 기대치
 
 - 1.5B: 작은 컴포넌트 TS 변환·표준 훅 생성에 적합. 긴 파일/복잡 로직·리뷰는 불안정.
