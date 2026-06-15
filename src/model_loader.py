@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-모델 싱글턴 로더 - API 서버와 MCP 서버 공용.
+모델 싱글턴 로더 - API 서버와 MCP 서버 공용. 디바이스 자동 감지.
 
-환경에 따라 서빙 모델 선택 (환경변수 REACT_ASSISTANT_MODEL):
-  - "1.5b" (기본): Qwen2.5-Coder-1.5B + qwen-react-lora-v4. 단순 로딩(tied-weight),
-    VRAM ~6GB. 카브아웃이 작을 때(재부팅으로 VRAM 축소 등)도 동작.
-  - "7b": Qwen2.5-Coder-7B + qwen-react-lora-7b-v4. dml_loader 스트리밍 fp16,
-    VRAM ~31GB 필요(48GB VRAM 카브아웃 환경에서만).
+디바이스 우선순위: CUDA(NVIDIA) > DirectML(AMD/Win) > CPU.
+
+서빙 모델 선택 (환경변수 REACT_ASSISTANT_MODEL):
+  - "1.5b" (기본): Qwen2.5-Coder-1.5B + qwen-react-lora-v4.
+  - "7b": Qwen2.5-Coder-7B + qwen-react-lora-7b-v4.
+      · CUDA: 4비트 양자화(bitsandbytes)로 ~5GB → 8GB GPU(예: RTX 4060)에서 동작.
+      · DirectML: fp16 스트리밍(~14GB, 48GB VRAM 카브아웃 환경 전용).
 
 모든 진단 로그는 stderr로 보낸다(MCP는 stdout으로 프로토콜 통신).
 """
@@ -15,7 +17,6 @@ import sys
 from pathlib import Path
 
 import torch
-import torch_directml
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MODEL = os.environ.get("REACT_ASSISTANT_MODEL", "1.5b").lower()
@@ -23,13 +24,9 @@ _MODEL = os.environ.get("REACT_ASSISTANT_MODEL", "1.5b").lower()
 if _MODEL == "7b":
     BASE_MODEL_PATH = os.path.join(_ROOT, "models", "base", "qwen2.5-coder-7b")
     ADAPTER_PATH = os.path.join(_ROOT, "models", "qwen-react-lora-7b-v4")
-    DTYPE = torch.float16
-    STREAM = True
 else:
     BASE_MODEL_PATH = os.path.join(_ROOT, "models", "base", "qwen2.5-coder-1.5b")
     ADAPTER_PATH = os.path.join(_ROOT, "models", "qwen-react-lora-v4")
-    DTYPE = torch.float16  # VRAM 축소 환경(~8GB)에서 여유 확보(3GB)
-    STREAM = False
 
 _model = None
 _tokenizer = None
@@ -40,51 +37,98 @@ def _err(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def _pick_device():
+    """(device, kind) 반환. kind: 'cuda' | 'dml' | 'cpu'."""
+    if torch.cuda.is_available():
+        return torch.device("cuda"), "cuda"
+    try:
+        import torch_directml
+        return torch_directml.device(), "dml"
+    except ImportError:
+        return torch.device("cpu"), "cpu"
+
+
+def _load_cuda(model_cls, tok):
+    """CUDA: 1.5b는 fp16, 7b는 4비트 양자화."""
+    from peft import PeftModel
+    if _MODEL == "7b":
+        from transformers import BitsAndBytesConfig
+        bnb = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True,
+        )
+        model = model_cls.from_pretrained(
+            BASE_MODEL_PATH, quantization_config=bnb, device_map="auto",
+            trust_remote_code=True,
+        )
+    else:
+        model = model_cls.from_pretrained(
+            BASE_MODEL_PATH, torch_dtype=torch.float16, device_map="cuda",
+            trust_remote_code=True,
+        )
+    if Path(ADAPTER_PATH).exists():
+        model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+    return model
+
+
+def _load_dml(model_cls, device):
+    """DirectML: 7b는 스트리밍 fp16, 1.5b는 단순 fp16."""
+    from peft import PeftModel
+    if _MODEL == "7b":
+        from peft import LoraConfig, get_peft_model, set_peft_model_state_dict, TaskType, PeftConfig
+        import safetensors.torch as st
+        from dml_loader import stream_load_to_device
+        model = stream_load_to_device(BASE_MODEL_PATH, device, torch.float16)
+        pc = PeftConfig.from_pretrained(ADAPTER_PATH)
+        model = get_peft_model(model, LoraConfig(
+            task_type=TaskType.CAUSAL_LM, r=pc.r, lora_alpha=pc.lora_alpha,
+            target_modules=pc.target_modules, lora_dropout=pc.lora_dropout, bias=pc.bias,
+        ))
+        sd = {k: v.to(torch.float16) for k, v in
+              st.load_file(os.path.join(ADAPTER_PATH, "adapter_model.safetensors")).items()}
+        set_peft_model_state_dict(model, sd)
+        return model.to(device)
+    else:
+        model = model_cls.from_pretrained(
+            BASE_MODEL_PATH, dtype=torch.float16, trust_remote_code=True)
+        if Path(ADAPTER_PATH).exists():
+            model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+        return model.to(device)
+
+
+def _load_cpu(model_cls, device):
+    from peft import PeftModel
+    model = model_cls.from_pretrained(
+        BASE_MODEL_PATH, dtype=torch.float32, trust_remote_code=True)
+    if Path(ADAPTER_PATH).exists():
+        model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+    return model.to(device)
+
+
 def get_model():
     global _model, _tokenizer, _device
     if _model is not None:
         return _model, _tokenizer, _device
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    _err(f"[model_loader] 모델 로드 시작 ({_MODEL}, stream={STREAM})...")
-    _device = torch_directml.device()
+    _device, kind = _pick_device()
+    _err(f"[model_loader] 디바이스={kind}, 모델={_MODEL} 로드 시작...")
 
     _tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
     if _tokenizer.pad_token is None:
         _tokenizer.pad_token = _tokenizer.eos_token
 
-    if STREAM:
-        # 7B: VRAM 직접 스트리밍 + 어댑터 fp16 적용
-        from peft import LoraConfig, get_peft_model, set_peft_model_state_dict, TaskType, PeftConfig
-        import safetensors.torch as st
-        from dml_loader import stream_load_to_device
-
-        model = stream_load_to_device(BASE_MODEL_PATH, _device, DTYPE)
-        pc = PeftConfig.from_pretrained(ADAPTER_PATH)
-        lora_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM, r=pc.r, lora_alpha=pc.lora_alpha,
-            target_modules=pc.target_modules, lora_dropout=pc.lora_dropout, bias=pc.bias,
-        )
-        model = get_peft_model(model, lora_config)
-        sd = {k: v.to(DTYPE) for k, v in
-              st.load_file(os.path.join(ADAPTER_PATH, "adapter_model.safetensors")).items()}
-        set_peft_model_state_dict(model, sd)
-        model = model.to(_device)
+    if kind == "cuda":
+        model = _load_cuda(AutoModelForCausalLM, _tokenizer)
+    elif kind == "dml":
+        model = _load_dml(AutoModelForCausalLM, _device)
     else:
-        # 1.5B: 단순 로딩(호스트→디바이스). tied-weight 모델에 안전.
-        from peft import PeftModel
-        model = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL_PATH, dtype=DTYPE, trust_remote_code=True,
-        )
-        if Path(ADAPTER_PATH).exists():
-            _err(f"[model_loader] LoRA 적용: {ADAPTER_PATH}")
-            model = PeftModel.from_pretrained(model, ADAPTER_PATH)
-        model = model.to(_device)
+        model = _load_cpu(AutoModelForCausalLM, _device)
 
     model.eval()
     model.config.use_cache = True
     _model = model
-    _err(f"[model_loader] 준비 완료 ({_MODEL})")
+    _err(f"[model_loader] 준비 완료 (device={kind}, model={_MODEL})")
     return _model, _tokenizer, _device
 
 
@@ -101,16 +145,18 @@ def generate(instruction: str, input_text: str = "", max_new_tokens: int = 512) 
         prompt = f"### Instruction:\n{instruction}\n\n### Response:\n"
 
     inputs = tokenizer(prompt, return_tensors="pt")
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    # 4비트(device_map) 모델은 입력을 모델의 첫 디바이스로. 그 외는 _device로.
+    target = getattr(model, "device", device)
+    inputs = {k: v.to(target) for k, v in inputs.items()}
 
-    # FIM/특수 토큰 누수 방지: 이 토큰들을 만나면 생성 종료(eos 취급)
+    # FIM/특수 토큰 누수 방지
     stop_ids = [tokenizer.eos_token_id]
     for tk in ["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>",
                "<|repo_name|>", "<|file_sep|>", "<|endoftext|>"]:
         tid = tokenizer.convert_tokens_to_ids(tk)
         if isinstance(tid, int) and tid >= 0 and tid != tokenizer.unk_token_id:
             stop_ids.append(tid)
-    stop_ids = list(dict.fromkeys(stop_ids))  # 중복 제거
+    stop_ids = list(dict.fromkeys(stop_ids))
 
     with torch.no_grad():
         outputs = model.generate(
@@ -128,4 +174,10 @@ def generate(instruction: str, input_text: str = "", max_new_tokens: int = 512) 
         outputs[0][inputs["input_ids"].shape[1]:],
         skip_special_tokens=True,
     )
+    # FIM/특수 토큰은 'added but non-special'이라 디코드 텍스트에 문자열로 남을 수 있음 → 잘라냄
+    for marker in ["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>",
+                   "<|repo_name|>", "<|file_sep|>", "<|endoftext|>"]:
+        idx = response.find(marker)
+        if idx != -1:
+            response = response[:idx]
     return response.strip()

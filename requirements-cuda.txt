@@ -1,0 +1,33 @@
+# NVIDIA(CUDA) 환경용 — 예: RTX 4060 8GB / Windows or Linux
+# torch-directml 대신 CUDA 빌드 PyTorch 사용.
+#
+# 설치 순서:
+#   1) CUDA 빌드 PyTorch (CUDA 12.1 예시):
+#      pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   2) 나머지:
+#      pip install -r requirements-cuda.txt
+
+# LLM 핵심
+transformers>=4.44.0
+datasets>=2.20.0
+peft>=0.12.0
+accelerate>=0.33.0
+tokenizers>=0.19.0
+sentencepiece
+safetensors
+
+# 7B 4비트 양자화(8GB GPU에서 7B 구동) — CUDA 전용
+bitsandbytes>=0.43.0
+
+# REST/MCP 서빙
+fastapi
+uvicorn
+mcp>=1.0.0
+
+# 유틸
+PyYAML>=6.0
+tqdm
+psutil
+pandas
+numpy
+requests
