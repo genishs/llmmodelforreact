@@ -14,6 +14,7 @@ DirectML(train_directml.py)·CPU(train.py)와 달리, CUDA에서는 bitsandbytes
       data/processed/*.jsonl 생성(build_dataset_v2.py).
 """
 import argparse
+import gc
 
 import yaml
 import torch
@@ -22,6 +23,7 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     Trainer,
+    TrainerCallback,
     DataCollatorForLanguageModeling,
     BitsAndBytesConfig,
 )
@@ -32,6 +34,19 @@ from peft import (
     prepare_model_for_kbit_training,
     TaskType,
 )
+
+
+class EmptyCacheCallback(TrainerCallback):
+    """매 optimizer step 후 CUDA 캐시를 비운다.
+
+    8GB GPU에서 7B는 실제 작업셋(~6GB)은 들어가지만, PyTorch 캐싱 할당자의
+    reserved 메모리가 단편화로 step마다 누적돼 8GB를 넘기면 공유메모리로 스필하며
+    step 시간이 10초→170초로 급락한다. step마다 회수해 ceiling 아래로 유지한다.
+    """
+
+    def on_step_end(self, args, state, control, **kwargs):
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def main():
@@ -61,6 +76,13 @@ def main():
         base, quantization_config=bnb, device_map="auto", trust_remote_code=True,
     )
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    # prepare_model_for_kbit_training은 4비트가 아닌 파라미터를 fp32로 업캐스트한다.
+    # 7B의 embed_tokens·lm_head(각 152k×3584)가 fp32면 둘이 ~4.4GB(fp16의 2배)로,
+    # 8GB GPU에서 4비트 베이스와 합쳐 한계를 넘겨 공유메모리 스필 → step당 수십 초로 급락.
+    # 이 둘은 LoRA 대상이 아니어서 학습되지 않으므로 fp16으로 되돌려 ~2.2GB를 회수한다.
+    for name, p in model.named_parameters():
+        if p.dtype == torch.float32 and ("embed_tokens" in name or "lm_head" in name):
+            p.data = p.data.to(compute_dtype)
     model.config.use_cache = False
 
     lc = cfg["lora"]
@@ -95,7 +117,10 @@ def main():
         save_total_limit=t["save_total_limit"],
         fp16=True, bf16=False,                 # bf16 쓰려면 fp16=False, bf16=True
         gradient_checkpointing=True,
-        optim="paged_adamw_8bit",              # QLoRA 권장 옵티마이저(VRAM 절약)
+        # LoRA는 학습 파라미터가 작아(여기선 10M) 옵티마이저 상태가 수십 MB뿐 → CPU 페이징
+        # (paged_*)이 불필요하고, 8GB GPU에서 매 step 느려지는 원인이 됨. 8bit in-VRAM 사용.
+        optim="adamw_8bit",
+        per_device_eval_batch_size=1,          # 기본 8이면 eval에서 VRAM 급증 → 8GB 초과 스필
         dataloader_num_workers=0,
         eval_strategy="steps", eval_steps=t["save_steps"],
         report_to="none",
@@ -104,6 +129,7 @@ def main():
         model=model, args=targs,
         train_dataset=train_ds, eval_dataset=val_ds,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tok, mlm=False),
+        callbacks=[EmptyCacheCallback()],
     )
     trainer.train()
     model.save_pretrained(args.out)

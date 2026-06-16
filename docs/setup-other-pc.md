@@ -40,8 +40,9 @@ huggingface-cli download Qwen/Qwen2.5-Coder-7B-Instruct  --local-dir models/base
 # 환경 확인(CUDA 인식되는지)
 python -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
-# 기본 1.5B로 추론
-python src/inference_7b.py "useToggle 훅 만들어줘"   # (CLI; 내부는 model_loader 자동 디바이스)
+# 기본 1.5B로 추론 (CUDA에서는 inference.py / model_loader 경로를 쓸 것)
+python src/inference.py            # 대화형 CLI (자동 디바이스 감지)
+# ⚠️ inference_7b.py는 DirectML 전용(torch_directml를 모듈 레벨 import)이라 CUDA에선 실행 불가.
 
 # REST API
 python src/serve_api.py            # http://localhost:8000/docs
@@ -65,26 +66,34 @@ set REACT_ASSISTANT_MODEL=7b        # (Linux: export REACT_ASSISTANT_MODEL=7b)
 
 ## 검증 상태 (정직)
 
-- **DirectML(현 AMD PC) 경로**: 검증됨.
-- **CUDA 경로**: 코드는 작성됐으나 **이 작업 환경엔 NVIDIA가 없어 미검증**.
-  4060에서 첫 실행 시 확인 필요. 4비트는 `bitsandbytes`가 CUDA를 정상 인식해야 함
-  (`python -c "import bitsandbytes"` 로 점검). 문제 시 1.5B fp16부터 시작 권장.
+- **DirectML(AMD PC) 경로**: 검증됨.
+- **CUDA 경로(RTX 4060 8GB)**: **2026-06-16 실측 검증 완료.** 1.5B fp16 추론, 7B 4비트
+  추론(~14 tok/s, VRAM 5.89GB), 7B QLoRA 학습(seq768, 19.7분) 모두 동작 확인.
+  단, **8GB에서 7B QLoRA는 메모리 처치 없이는 사실상 못 돌린다**(공유메모리 스필로 step이
+  10초→170초). 처치는 `src/train_qlora.py`에 반영됨 — 상세·비교·egovGeoportal 실파일 테스트는
+  [training-benchmark-7b-cuda.md](training-benchmark-7b-cuda.md) 참고.
+  점검: `python -c "import bitsandbytes"`, `set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
 
-## 7B QLoRA 재학습 (seq 1024, 잘림 없이) — 4060의 핵심 이점
+## 7B QLoRA 재학습 (잘림 없이) — 4060의 핵심 이점
 
 DirectML(AMD)에선 VRAM 한계로 seq 256/384에 묶여 데이터의 51%가 잘렸다. CUDA에선
-4비트 양자화로 가중치가 ~5GB라 VRAM 여유가 생겨 **seq 1024(잘림 없이)** 학습이 가능하다.
+4비트 양자화로 가중치가 ~5GB라 **seq 768(잘림 0건)** 학습이 가능하다. (학습셋 실측 토큰
+길이 최대 713/평균 263이라 768로 충분 — seq 1024는 과대 설정으로 메모리만 낭비.)
 
 ```bash
-# 1) 데이터 빌드 (seq 1024에 맞춰 토큰 한도 상향 → 더 많은 샘플이 잘림 없이 포함)
-python src/build_dataset_v2.py --cap 1024 --gh-out-cap 512
+# 1) 데이터 빌드 (cap 1024로 빌드해도 모든 샘플이 768 이하라 동일)
+python src/build_dataset_v2.py --cap 1024 --gh-out-cap 512   # → 303개(272/31)
 
-# 2) QLoRA 학습 (4비트, gradient checkpointing, paged AdamW 8bit)
-python src/train_qlora.py --seq 1024 --out ./models/qwen-react-lora-7b-qlora
+# 2) QLoRA 학습 (메모리 처치 포함)
+set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+python src/train_qlora.py --seq 768 --out ./models/qwen-react-lora-7b-qlora
 ```
 
-- `train_qlora.py`는 HF Trainer + bitsandbytes(nf4) + peft 표준 레시피. 8GB에 맞춰
-  gradient checkpointing·paged_adamw_8bit 사용. (DirectML의 커스텀 루프와 달리 표준 도구라 안정적.)
+- ⚠️ **8GB GPU 필수 처치(이미 `train_qlora.py`에 반영):** `prepare_model_for_kbit_training`이
+  embed/lm_head를 fp32로 올려 +2.2GB → 스필되므로 fp16으로 되돌림; step마다 `empty_cache`로
+  단편화 누적 차단; `adamw_8bit`(paged 아님); `per_device_eval_batch_size=1`. 처치 전엔 step이
+  10초→170초로 급락해 사실상 못 끝낸다. 근거·수치는 [training-benchmark-7b-cuda.md](training-benchmark-7b-cuda.md).
+- 실측: 3 epoch/102 step, **19.7분**, train_loss 0.55 / eval_loss 0.47.
 - 학습 후 서빙: `model_loader.py`의 7b ADAPTER_PATH를 `qwen-react-lora-7b-qlora`로 바꾸거나,
   그 경로를 가리키게 하고 `REACT_ASSISTANT_MODEL=7b`로 실행.
 - bf16을 쓰려면 train_qlora.py 안의 `compute_dtype`/`fp16`/`bf16` 주석 참고(4060은 bf16 지원).

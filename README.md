@@ -33,6 +33,10 @@ AMD Ryzen AI Max+ 392 (12코어, Radeon 8060S) 위에서 직접 학습하고 실
 > API 서버(`serve_api.py`)와 MCP 서버(`mcp_server.py`)는 `model_loader.py`를 통해
 > **7B v4**를 DirectML에 fp16 스트리밍 적재해 서빙합니다(VRAM ~31GB). 7B 학습·데이터
 > 큐레이션 상세는 `docs/training-benchmark-7b.md` 참고.
+>
+> **NVIDIA(CUDA) 이식:** `model_loader.py`는 CUDA>DirectML>CPU 자동 감지. RTX 4060 8GB에서
+> 7B 4비트 QLoRA 학습(seq768)을 검증하고 AMD-DirectML 학습본과 비교한 결과는
+> `docs/training-benchmark-7b-cuda.md`, 이식 절차는 `docs/setup-other-pc.md` 참고.
 
 ---
 

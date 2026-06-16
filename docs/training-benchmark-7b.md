@@ -2,6 +2,12 @@
 
 날짜: 2026-06-13 · 작성: AI dev team (Opus 메인 + Sonnet 경량 운영)
 
+> **이 문서는 AMD Radeon 8060S(DirectML) 버전이다.** 같은 7B를 NVIDIA RTX 4060(CUDA, 4비트
+> QLoRA)에서 학습·검증하고 두 어댑터를 비교한 기록은
+> [training-benchmark-7b-cuda.md](training-benchmark-7b-cuda.md)를 참고. 요약: DirectML은
+> seq 256/384 한계로 데이터 51%가 잘려 TS 제네릭·복잡/긴 출력에서 무너지는 반면, CUDA seq768
+> 학습본은 그 항목들과 실파일(egovGeoportal) 변환까지 처리한다.
+
 ## 결론 요약 — "어느 규모의 학습에 얼마나 걸리나"
 
 | 항목 | 값 |
