@@ -73,7 +73,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--adapter", required=True)
     ap.add_argument("--label", required=True)
-    ap.add_argument("--max-new", type=int, default=400)
+    ap.add_argument("--max-new", type=int, default=1024)  # 긴 실파일 변환 잘림 방지(짧은건 eos로 조기정지)
     args = ap.parse_args()
 
     tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)

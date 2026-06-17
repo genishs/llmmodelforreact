@@ -276,6 +276,213 @@ function EgovError(): JSX.Element {
 }
 
 export default EgovError;'''),
+
+"PrivateRoutes": ("routes/PrivateRoutes.jsx", '''import { useEffect, useState } from "react";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import URL from "@/constants/url";
+import * as EgovNet from "@/api/egovFetch";
+
+const PrivateRoutes = (): JSX.Element | null => {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const location = useLocation();
+
+  useEffect(() => {
+    const jwtAuthURL = "/jwtAuthAPI";
+    const requestOptions: RequestInit = { method: "POST" };
+
+    EgovNet.requestFetch(jwtAuthURL, requestOptions, (resp: unknown) => {
+      setIsAuthenticated(resp !== false);
+    });
+  }, []);
+
+  if (isAuthenticated === null) {
+    return null;
+  }
+
+  return isAuthenticated ? <Outlet /> : <Navigate to={URL.LOGIN} state={{ from: location }} />;
+};
+
+export default PrivateRoutes;'''),
+
+"EgovAboutSite": ("pages/about/EgovAboutSite.jsx", '''import img_1 from "/assets/images/ori_ico_bn03.png";
+import img_2 from "/assets/images/ori_ico_bn04.png";
+import img_3 from "/assets/images/ori_ico_bn01.png";
+
+interface SiteItem {
+  title: string;
+  url: string;
+  img: string;
+}
+
+function EgovAboutSite(): JSX.Element {
+  const list: SiteItem[] = [
+    { title: "사용자 관리", url: "", img: img_1 },
+    { title: "데이터 접근권한 관리", url: "", img: img_2 },
+    { title: "플랫폼 이용현황", url: "", img: img_3 },
+  ];
+
+  const setBox = (): JSX.Element => {
+    return (
+      <>
+        {list.map((e, i) => (
+          <div className="b1" key={i}>
+            <div className="b1_title">
+              <h3>{e.title}</h3>
+            </div>
+            <div className="b1_img">
+              <img src={e.img} alt={e.title} />
+            </div>
+          </div>
+        ))}
+      </>
+    );
+  };
+
+  return (
+    <div className="container">
+      <div className="c_wrap">
+        <div className="layout">
+          <div className="system_layout">{setBox()}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default EgovAboutSite;'''),
+
+"AdminNoticeCreatePopup": ("pages/admin/notice/AdminNoticeCreatePopup.jsx", '''import React from "react";
+
+interface BoardDetail {
+  bbsId?: string;
+  nttId?: string;
+  nttSj?: string;
+  nttCn?: string;
+}
+
+interface AdminNoticeCreatePopupProps {
+  onClose: () => void;
+  boardDetail: BoardDetail;
+  setBoardDetail: (detail: BoardDetail) => void;
+  updateBoard: () => void;
+  deleteBoard: (bbsId?: string, nttId?: string) => void;
+}
+
+function AdminNoticeCreatePopup({
+  onClose,
+  boardDetail,
+  setBoardDetail,
+  updateBoard,
+  deleteBoard,
+}: AdminNoticeCreatePopupProps): JSX.Element {
+  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    const value = e.target.value;
+    setBoardDetail({
+      ...boardDetail,
+      nttSj: value,
+      nttCn: value,
+    });
+  };
+
+  const isEditMode = boardDetail && boardDetail.nttId;
+
+  return (
+    <div className="popup_bg">
+      <div className="popup">
+        <div>
+          <div className="pop_title sbold tac d_flex d_jcc">
+            {isEditMode ? "공지사항 수정" : "공지사항 등록"}
+          </div>
+          <a href="#" onClick={onClose}>
+            <div className="pop_x img_all"></div>
+          </a>
+        </div>
+
+        <div className="pop_input_wrap d_flex aic">
+          <label htmlFor="nttSj" className="pop_txt">내 용</label>
+          <input
+            className="pop_input"
+            id="nttSj"
+            name="nttSj"
+            type="text"
+            value={boardDetail.nttSj || ""}
+            onChange={handleTitleChange}
+          />
+        </div>
+
+        <div className="pop_btn_wrap">
+          <div className="blu_btn" onClick={updateBoard} role="button" tabIndex={0}>
+            저 장
+          </div>
+          {isEditMode && (
+            <div
+              className="blu_btn"
+              onClick={() => deleteBoard(boardDetail.bbsId, boardDetail.nttId)}
+              role="button"
+              tabIndex={0}
+            >
+              삭 제
+            </div>
+          )}
+          <div className="w_btn" onClick={onClose} role="button" tabIndex={0}>
+            취 소
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default AdminNoticeCreatePopup;'''),
+
+"EgovLeftNavInform": ("components/leftmenu/EgovLeftNavInform.jsx", '''import { NavLink } from "react-router-dom";
+import URL from "@/constants/url";
+
+function EgovLeftNavInform(): JSX.Element {
+  return (
+    <div className="nav">
+      <div className="inner">
+        <h2>알림마당</h2>
+        <ul className="menu4">
+          <li>
+            <NavLink
+              to={URL.INFORM_NOTICE}
+              className={({ isActive }: { isActive: boolean }) => (isActive ? "cur" : "")}
+            >
+              공지사항
+            </NavLink>
+          </li>
+          <li style={{ display: "none" }}>
+            <NavLink
+              to={URL.INFORM_DAILY}
+              className={({ isActive }: { isActive: boolean }) => (isActive ? "cur" : "")}
+            >
+              오늘의행사
+            </NavLink>
+          </li>
+          <li style={{ display: "none" }}>
+            <NavLink
+              to={URL.INFORM_WEEKLY}
+              className={({ isActive }: { isActive: boolean }) => (isActive ? "cur" : "")}
+            >
+              금주의행사
+            </NavLink>
+          </li>
+          <li style={{ display: "none" }}>
+            <NavLink
+              to={URL.INFORM_GALLERY}
+              className={({ isActive }: { isActive: boolean }) => (isActive ? "cur" : "")}
+            >
+              사이트갤러리
+            </NavLink>
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export default EgovLeftNavInform;'''),
 }
 
 
