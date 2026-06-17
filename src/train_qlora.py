@@ -54,7 +54,14 @@ def main():
     ap.add_argument("--config", default="./config/training_config.yaml")
     ap.add_argument("--seq", type=int, default=1024, help="max_seq_length(4비트라 1024 권장)")
     ap.add_argument("--out", default="./models/qwen-react-lora-7b-qlora")
+    ap.add_argument("--rank", type=int, default=0, help="LoRA rank 오버라이드(0=config)")
+    ap.add_argument("--alpha", type=int, default=0, help="LoRA alpha 오버라이드(0=rank*2)")
+    ap.add_argument("--target", choices=["qkvo", "qkvo_mlp"], default="qkvo",
+                    help="qkvo=기존(q,k,v,o), qkvo_mlp=+MLP(gate,up,down) 용량 확대")
+    ap.add_argument("--max-steps", type=int, default=0,
+                    help="0=full. >0이면 그만큼만 학습(스모크용, 저장 생략)")
     args = ap.parse_args()
+    smoke = args.max_steps > 0
 
     assert torch.cuda.is_available(), "CUDA가 필요합니다(NVIDIA GPU). bitsandbytes 4비트는 CUDA 전용."
     print(f"[CUDA] {torch.cuda.get_device_name(0)}")
@@ -86,9 +93,14 @@ def main():
     model.config.use_cache = False
 
     lc = cfg["lora"]
+    rank = args.rank or lc["r"]
+    alpha = args.alpha or (rank * 2)
+    targets = (lc["target_modules"] if args.target == "qkvo" else
+               ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
+    print(f"[LoRA] r={rank} alpha={alpha} target={args.target}({len(targets)} modules)")
     model = get_peft_model(model, LoraConfig(
-        task_type=TaskType.CAUSAL_LM, r=lc["r"], lora_alpha=lc["lora_alpha"],
-        target_modules=lc["target_modules"], lora_dropout=lc["lora_dropout"], bias=lc["bias"],
+        task_type=TaskType.CAUSAL_LM, r=rank, lora_alpha=alpha,
+        target_modules=targets, lora_dropout=lc["lora_dropout"], bias=lc["bias"],
     ))
     model.print_trainable_parameters()
 
@@ -122,7 +134,9 @@ def main():
         optim="adamw_8bit",
         per_device_eval_batch_size=1,          # 기본 8이면 eval에서 VRAM 급증 → 8GB 초과 스필
         dataloader_num_workers=0,
-        eval_strategy="steps", eval_steps=t["save_steps"],
+        eval_strategy=("no" if smoke else "steps"), eval_steps=t["save_steps"],
+        max_steps=(args.max_steps if smoke else -1),
+        save_strategy=("no" if smoke else "steps"),
         report_to="none",
     )
     trainer = Trainer(
@@ -132,6 +146,10 @@ def main():
         callbacks=[EmptyCacheCallback()],
     )
     trainer.train()
+    if smoke:
+        print(f"[스모크 완료] max_steps={args.max_steps}, 저장 생략. "
+              f"VRAM peak {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+        return
     model.save_pretrained(args.out)
     tok.save_pretrained(args.out)
     print(f"[완료] 저장: {args.out}")

@@ -57,12 +57,16 @@ def main():
     model = PeftModel.from_pretrained(model, str(ROOT / args.adapter))
     model.eval()
 
-    stop_ids = [tok.eos_token_id]
-    for t in FIM:
+    # 특수토큰 누수 대응(model_loader와 동일): <|im_start|> 등 특수/FIM 토큰 '생성 자체'를
+    # suppress하고 min_new_tokens로 즉시-eos 붕괴 차단. eos만 정지용으로 유지.
+    eos_id = tok.eos_token_id
+    suppress = set(int(i) for i in (tok.all_special_ids or []))
+    for t in FIM + ["<|im_start|>"]:
         tid = tok.convert_tokens_to_ids(t)
         if isinstance(tid, int) and tid >= 0 and tid != tok.unk_token_id:
-            stop_ids.append(tid)
-    stop_ids = list(dict.fromkeys(stop_ids))
+            suppress.add(int(tid))
+    suppress.discard(int(eos_id))
+    suppress_tokens = sorted(suppress)
 
     print(f"\n{'='*70}\n[{args.label}] adapter={args.adapter}\n{'='*70}", flush=True)
     total_tok, total_t = 0, 0.0
@@ -72,9 +76,9 @@ def main():
         t0 = time.time()
         with torch.no_grad():
             out = model.generate(
-                **inputs, max_new_tokens=args.max_new, do_sample=False,
-                pad_token_id=tok.eos_token_id, eos_token_id=stop_ids,
-                repetition_penalty=1.1)
+                **inputs, max_new_tokens=args.max_new, min_new_tokens=24, do_sample=False,
+                pad_token_id=tok.eos_token_id, eos_token_id=eos_id,
+                suppress_tokens=suppress_tokens, repetition_penalty=1.1)
         dt = time.time() - t0
         gen = out[0][inputs["input_ids"].shape[1]:]
         n = gen.shape[0]
