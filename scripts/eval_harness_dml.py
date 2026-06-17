@@ -83,13 +83,15 @@ def main():
                                  do_sample=False, pad_token_id=eos_id, eos_token_id=eos_id,
                                  suppress_tokens=suppress_tokens, repetition_penalty=1.1)
         gen = out[0][in_len:]
-        raw = tok.decode(gen, skip_special_tokens=False)
+        # 새 하니스(4060 fix)와 동일: eos 외 특수토큰 ID가 생성에 섞였는지로 leak 판정
+        leak = any(int(t) in set(suppress_tokens) for t in gen.tolist())
+        no_special = 0 if leak else 1
         clean = tok.decode(gen, skip_special_tokens=True)
         for m in EH.FIM:
             j = clean.find(m)
             if j != -1:
                 clean = clean[:j]
-        sc = EH.score_output(raw, clean, expects)
+        sc = EH.score_output(no_special, clean, expects)
         sc["task"] = name; sc["in_tok"] = in_len
         rows.append(sc); grand += sc["total"]
         print(f"[{name:16s}] total={sc['total']:.2f}  ne={sc['nonempty']} sp={sc['no_special']} "

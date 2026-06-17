@@ -144,9 +144,12 @@ def make_loader(data_file, tok, max_len, batch_size, shuffle):
     ds = load_dataset("json", data_files=data_file, split="train")
 
     def tok_fn(ex):
+        # ★ EOS 위생(2026-06-18): 각 텍스트 끝에 eos(<|im_end|>) 부착. pad=<|endoftext|>로
+        #   eos와 달라 라벨에 살아남음 → 모델이 정지를 학습(### 누수·런온 방지).
+        texts = [t + tok.eos_token for t in ex["text"]]
         # 고정 길이 패딩: 모든 배치를 동일 크기로 → DirectML 할당자 버퍼 재사용
         # (동적 패딩 시 배치마다 크기가 달라 VRAM이 step마다 증가 → OOM)
-        return tok(ex["text"], truncation=True, max_length=max_len,
+        return tok(texts, truncation=True, max_length=max_len,
                    padding="max_length")
 
     ds = ds.map(tok_fn, batched=True, remove_columns=ds.column_names)
@@ -167,9 +170,22 @@ def main():
     ap.add_argument("--grad-ckpt", action="store_true",
                     help="gradient checkpointing(DirectML에서는 비권장)")
     ap.add_argument("--out", default="", help="출력 디렉터리 오버라이드(0=config)")
+    ap.add_argument("--lora-r", type=int, default=0, help="LoRA r 오버라이드(0=config). α는 2r로 동반 조정")
+    ap.add_argument("--lora-mlp", action="store_true",
+                    help="MLP(gate/up/down_proj)도 LoRA 타깃에 추가(capacity 확대)")
     args = ap.parse_args()
 
     config = load_config(args.config)
+    # LoRA capacity 오버라이드(품질 튜닝용)
+    if args.lora_r > 0:
+        config["lora"]["r"] = args.lora_r
+        config["lora"]["lora_alpha"] = args.lora_r * 2
+    if args.lora_mlp:
+        tm = list(config["lora"]["target_modules"])
+        for m in ["gate_proj", "up_proj", "down_proj"]:
+            if m not in tm:
+                tm.append(m)
+        config["lora"]["target_modules"] = tm
     dtype = torch.float16 if args.dtype == "fp16" else torch.float32
     use_scale = dtype == torch.float16
     SCALE = args.scale if use_scale else 1.0
