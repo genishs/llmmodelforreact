@@ -83,12 +83,15 @@ def main():
     model.config.use_cache = True
     print(f"[로드] 어댑터 적용: {args.adapter} ({len(sd)} 텐서)", flush=True)
 
-    stop_ids = [tok.eos_token_id]
-    for t in FIM:
+    # ★ 특수토큰 억제(특히 <|im_start|>) + min_new_tokens로 긴-입력 붕괴 방지(2026-06-17 실측)
+    eos_id = tok.eos_token_id
+    suppress_ids = set(int(i) for i in (tok.all_special_ids or []))
+    for t in FIM + ["<|im_start|>"]:
         tid = tok.convert_tokens_to_ids(t)
         if isinstance(tid, int) and tid >= 0 and tid != tok.unk_token_id:
-            stop_ids.append(tid)
-    stop_ids = list(dict.fromkeys(stop_ids))
+            suppress_ids.add(int(tid))
+    suppress_ids.discard(int(eos_id))
+    suppress_tokens = sorted(suppress_ids)
 
     for name, instr, code in tests:
         inputs = tok(build_prompt(instr, code), return_tensors="pt")
@@ -96,9 +99,9 @@ def main():
         inputs = {k: v.to(device) for k, v in inputs.items()}
         t0 = time.time()
         with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=args.max_new, do_sample=False,
-                                 pad_token_id=tok.eos_token_id, eos_token_id=stop_ids,
-                                 repetition_penalty=1.1)
+            out = model.generate(**inputs, max_new_tokens=args.max_new, min_new_tokens=24,
+                                 do_sample=False, pad_token_id=tok.eos_token_id, eos_token_id=eos_id,
+                                 suppress_tokens=suppress_tokens, repetition_penalty=1.1)
         gen = out[0][in_len:]
         text = tok.decode(gen, skip_special_tokens=True)
         for m in FIM:

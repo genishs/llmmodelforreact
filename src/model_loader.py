@@ -149,24 +149,32 @@ def generate(instruction: str, input_text: str = "", max_new_tokens: int = 512) 
     target = getattr(model, "device", device)
     inputs = {k: v.to(target) for k, v in inputs.items()}
 
-    # FIM/특수 토큰 누수 방지
-    stop_ids = [tokenizer.eos_token_id]
+    # 특수 토큰 누수 방지.
+    # ★ 긴 입력(840tok 등)에서 모델이 <|im_start|>(챗템플릿 토큰)를 도배 후 즉시 eos로
+    #   빈 출력이 되는 붕괴를 실측(2026-06-17). eos로만 막던 기존 방식으론 못 잡혀서,
+    #   <|im_start|> 포함 모든 특수/FIM 토큰을 suppress_tokens로 '생성 자체를 차단'하고
+    #   min_new_tokens로 조기 정지를 막는다. (eos=<|im_end|>는 정지용으로 남김)
+    eos_id = tokenizer.eos_token_id
+    suppress_ids = set(int(i) for i in (tokenizer.all_special_ids or []))
     for tk in ["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>",
-               "<|repo_name|>", "<|file_sep|>", "<|endoftext|>"]:
+               "<|repo_name|>", "<|file_sep|>", "<|endoftext|>", "<|im_start|>"]:
         tid = tokenizer.convert_tokens_to_ids(tk)
         if isinstance(tid, int) and tid >= 0 and tid != tokenizer.unk_token_id:
-            stop_ids.append(tid)
-    stop_ids = list(dict.fromkeys(stop_ids))
+            suppress_ids.add(int(tid))
+    suppress_ids.discard(int(eos_id))           # eos는 정지에 필요 → 억제 제외
+    suppress_tokens = sorted(suppress_ids)
 
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=24,                  # 즉시-eos 붕괴 방지
             temperature=0.7,
             do_sample=True,
             top_p=0.9,
             pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=stop_ids,
+            eos_token_id=eos_id,
+            suppress_tokens=suppress_tokens,
             repetition_penalty=1.1,
         )
 
