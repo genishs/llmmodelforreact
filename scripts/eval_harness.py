@@ -58,9 +58,8 @@ def balanced(s):
     return 1 if not st else 0
 
 
-def score_output(raw_with_special, clean, expects):
+def score_output(no_special, clean, expects):
     nonempty = 1 if len(clean.strip()) >= 30 else 0
-    no_special = 1 if "<|" not in raw_with_special else 0
     no_hash = 1 if "###" not in clean else 0
     bal = balanced(clean) if nonempty else 0
     hit = sum(1 for k in expects if k in clean)
@@ -95,6 +94,7 @@ def main():
             suppress.add(int(tid))
     suppress.discard(int(eos_id))
     suppress_tokens = sorted(suppress)
+    special_noeos = set(int(i) for i in (tok.all_special_ids or [])) - {int(eos_id)}
 
     rows, grand = [], 0.0
     for name, instr, inp, expects in TASKS:
@@ -110,13 +110,15 @@ def main():
                                  do_sample=False, pad_token_id=eos_id, eos_token_id=eos_id,
                                  suppress_tokens=suppress_tokens, repetition_penalty=1.1)
         gen = out[0][in_len:]
-        raw = tok.decode(gen, skip_special_tokens=False)
+        # 특수토큰 누수 = eos 외 특수토큰이 생성에 섞였는가(토큰 ID 기반; eos 정상종료는 제외)
+        leak = any(int(t) in special_noeos for t in gen.tolist())
+        no_special = 0 if leak else 1
         clean = tok.decode(gen, skip_special_tokens=True)
         for m in FIM:
             j = clean.find(m)
             if j != -1:
                 clean = clean[:j]
-        sc = score_output(raw, clean, expects)
+        sc = score_output(no_special, clean, expects)
         sc["task"] = name
         sc["in_tok"] = in_len
         rows.append(sc)

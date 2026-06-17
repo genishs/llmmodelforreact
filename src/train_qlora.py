@@ -106,8 +106,12 @@ def main():
 
     d = cfg["data"]
 
+    # EOS 위생: 학습 텍스트 끝에 eos를 붙여 '응답 종료'를 학습시킨다. 없으면 모델이 정지를
+    # 못 배워 오버런(카운터가 안 멈춤)·`###` 다음섹션 누수가 생긴다. 데이터 최대 713<768이라
+    # eos가 truncation에 잘릴 일 없음.
     def tok_fn(ex):
-        return tok(ex["text"], truncation=True, max_length=args.seq, padding=False)
+        texts = [t + tok.eos_token for t in ex["text"]]
+        return tok(texts, truncation=True, max_length=args.seq, padding=False)
 
     train_ds = load_dataset("json", data_files=d["train_file"], split="train").map(
         tok_fn, batched=True, remove_columns=["text"])
