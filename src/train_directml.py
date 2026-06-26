@@ -140,13 +140,14 @@ def build(model_path, device, config, dtype, grad_ckpt):
     return model, tok
 
 
-def make_loader(data_file, tok, max_len, batch_size, shuffle):
+def make_loader(data_file, tok, max_len, batch_size, shuffle, add_eos=True):
     ds = load_dataset("json", data_files=data_file, split="train")
 
     def tok_fn(ex):
         # ★ EOS 위생(2026-06-18): 각 텍스트 끝에 eos(<|im_end|>) 부착. pad=<|endoftext|>로
         #   eos와 달라 라벨에 살아남음 → 모델이 정지를 학습(### 누수·런온 방지).
-        texts = [t + tok.eos_token for t in ex["text"]]
+        #   단 R3에서 회귀 관측 → --no-eos로 끄면 seq512(pre-EOS) 레시피 재현.
+        texts = [(t + tok.eos_token) if add_eos else t for t in ex["text"]]
         # 고정 길이 패딩: 모든 배치를 동일 크기로 → DirectML 할당자 버퍼 재사용
         # (동적 패딩 시 배치마다 크기가 달라 VRAM이 step마다 증가 → OOM)
         return tok(texts, truncation=True, max_length=max_len,
@@ -173,6 +174,9 @@ def main():
     ap.add_argument("--lora-r", type=int, default=0, help="LoRA r 오버라이드(0=config). α는 2r로 동반 조정")
     ap.add_argument("--lora-mlp", action="store_true",
                     help="MLP(gate/up/down_proj)도 LoRA 타깃에 추가(capacity 확대)")
+    ap.add_argument("--train-file", default="", help="train_file 오버라이드(빈값=config)")
+    ap.add_argument("--no-eos", action="store_true",
+                    help="EOS 위생 끔(seq512 pre-EOS 레시피 재현 — R3 회귀 회피)")
     args = ap.parse_args()
 
     config = load_config(args.config)
@@ -205,10 +209,13 @@ def main():
     accum = tcfg["gradient_accumulation_steps"]
     max_len = args.seq if args.seq > 0 else dcfg["max_seq_length"]
 
-    train_loader = make_loader(dcfg["train_file"], tok, max_len, bs, shuffle=True)
+    train_file = args.train_file if args.train_file else dcfg["train_file"]
+    add_eos = not args.no_eos
+    log(f"train_file={train_file} | EOS위생={'on' if add_eos else 'off(pre-EOS)'}")
+    train_loader = make_loader(train_file, tok, max_len, bs, shuffle=True, add_eos=add_eos)
     smoke = args.smoke > 0
     val_loader = (None if smoke
-                  else make_loader(dcfg["val_file"], tok, max_len, bs, shuffle=False))
+                  else make_loader(dcfg["val_file"], tok, max_len, bs, shuffle=False, add_eos=add_eos))
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     optim = torch.optim.AdamW(trainable, lr=float(tcfg["learning_rate"]), eps=1e-4)

@@ -43,11 +43,14 @@ def main():
     ap.add_argument("--label", required=True)
     ap.add_argument("--max-new", type=int, default=2048)  # EHT와 동일: 1024는 egov-download 잘림 → 부당감점
     ap.add_argument("--only", default="",
-                    help="쉼표구분 태스크명만 실행(빈값=전체 11개). 예: --only egov-download-ts")
+                    help="쉼표구분 태스크명만 실행(빈값=전체). 예: --only egov-download-ts")
+    ap.add_argument("--heldout", action="store_true",
+                    help="확장 held-out eval셋(egov 4파일 변환, EHT.HELDOUT_TASKS)으로 측정")
     args = ap.parse_args()
 
+    base_tasks = EHT.HELDOUT_TASKS if args.heldout else EHT.TASKS
     only = {s.strip() for s in args.only.split(",") if s.strip()}
-    tasks = [t for t in EHT.TASKS if (not only or t[0] in only)]
+    tasks = [t for t in base_tasks if (not only or t[0] in only)]
     ARCHIVE = EHT.ARCHIVE_DIR  # ★버그2 수정: run_tsc(per-file)가 여기서 단독컴파일 소스를 읽음
     ARCHIVE.mkdir(parents=True, exist_ok=True)
 
@@ -134,7 +137,7 @@ def main():
     pct = round(100 * grand / maxp, 1)
     n_clean = sum(r["clean"] for r in rows)
     tot_err = sum(r["errors"] for r in rows)
-    egov_meta = EHT.egov_inputs_meta()
+    egov_meta = EHT.egov_inputs_meta(base_tasks)
     print(f"\n[{args.label}] CLEAN {n_clean}/{maxp} compiles | total_errors={tot_err} | "
           f"SCORE {grand:.2f}/{maxp} = {pct}%", flush=True)
     print(f"  egov inputs(LF): {egov_meta}", flush=True)
