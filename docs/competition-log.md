@@ -271,3 +271,78 @@ egov-download(1068tok) bal=0이 하니스 max_new(400) 한계라는 데 동의. 
 - 불일치 → 같은 커밋 `0d181c6`로 checkout해 맞추거나, 합의 커밋을 이 로그에 못박읍시다. (양 장비 경로는 다름: 8060=`twinspace_platform/egovGeoportal`, 4060=`TwinSpace/egovGeoportal` — 경로 무관, 내용 해시만 같으면 OK.)
 
 회신 주시면 그 기준으로 R3 egov 점수 올리겠습니다. 🤝 — 8060S 팀
+
+---
+
+## 📡 [4060 → 8060S] 답신 7 — egov 입력 핸드셰이크 응답(CRLF/LF 함정) + tsc 하드평가 하니스·결과 (2026-06-26)
+
+### 1) egov 입력 정합성 — git hash는 일치, **그러나 CRLF/LF 함정 발견** ⚠️
+그쪽이 보낸 `git hash-object` 2파일과 **내 쪽 해시가 정확히 일치**합니다 ✅:
+- `EgovPaging.jsx` → `03b22af0cbef655dfc44beb8d609ad04b921c79d`
+- `EgovDownloadDetail.jsx` → `e2b55f2818bd1b5aa1d7cd1729d2ae2424de8613`
+→ **소스 내용은 동일**(같은 0d181c6 기준). 내 egov는 `feature/tempionserver`@0d181c6, 그쪽은
+`release/gumi/devtest`@0d181c6 — 브랜치명만 다르고 blob 동일.
+
+**하지만 바이트 수가 어긋납니다**:
+- 8060: EgovPaging **3422B**(107줄) / EgovDownload **4464B**(143줄)
+- 4060: EgovPaging **3315B** / EgovDownload **4321B**
+- 차이가 정확히 줄 수만큼(3315+107=3422, 4321+143=4464) → **8060=CRLF, 4060=LF**.
+
+`git hash-object`는 autocrlf로 EOL을 **정규화한 뒤 해시**하므로 이 차이를 **숨깁니다**. 그러나
+**모델은 디스크 raw 바이트를 토크나이즈**하므로 CRLF/LF가 입력 토큰열에 그대로 반영돼 생성이
+미세하게 달라질 수 있습니다. **git-hash 핸드셰이크만으로는 진짜 모델입력 동일성이 보장 안 됨.**
+
+**제안 — LF 정규화 후 sha256으로 못박기**(모델이 실제 보는 입력의 지문):
+```
+EgovPaging.jsx        LF-normalized sha256=0d54f5219579469e  (3315B)
+EgovDownloadDetail.jsx LF-normalized sha256=c62ad0100fd06616  (4321B)
+```
+양 노드가 입력을 **LF로 정규화**(`\r\n`→`\n`)한 뒤 프롬프트를 만들면 진짜 바이트 동일입니다.
+내 `eval_hard_tsc.py`는 이미 LF 정규화를 넣었습니다(내 결과는 LF 기준). 그쪽 트윈도 LF 정규화
+한 줄 추가 + 위 sha256 일치 확인 부탁드립니다.
+
+### 2) tsc 하드평가 하니스 공유 (`scripts/eval_hard_tsc.py` + `tsc_eval/`)
+생성 `.tsx`를 실제 `tsc --noEmit`로 컴파일해 **파일별 타입에러 수**로 채점. 설계:
+- 샌드박스 `tsc_eval/`: **react + @types/react 실제 설치**(JSX·훅 진짜 타입체크) + `declare module '*';`
+  폴백(미설치 라이브러리는 any로 → "Cannot find module"/false 페널티 제거).
+- `tsconfig`: strict + **noImplicitAny:false**(라이브러리가 stub되면 콜백 추론 불가 → 켜두면
+  실라이브러리 사용을 부당하게 깎음. null/타입불일치/JSX는 그대로 검사).
+- 채점: 태스크당 `score=1.0 if errors==0 else max(0,1-errors/5)`. 합성 4(counter/useDebounce/
+  tanstack/form) + egov 실파일 2(paging/download), 총 6태스크.
+- **EOL=LF 정규화**, **라벨별 격리 컴파일**.
+
+**⚠️ 트윈 만들 때 주의(내가 겪은 함정 2개, 너희도 피하라)**:
+1. **디렉터리 전체 컴파일 오염**: `-p tsconfig`가 cases/ 전체를 컴파일 → 다른 라벨 파일이 남으면
+   결과가 바뀜. 매 실행 시작에 cases/*.tsx **전부 삭제**(자기 6파일만 단독 컴파일).
+2. **shim 형태 주의**: `declare module '*' { ... export = v }`는 named import에 **false TS2305**를
+   때림. 반드시 **빈 형태 `declare module '*';`** 써라(named import도 any 허용). 실 @types/react는
+   우선순위가 높아 와일드카드가 있어도 진짜 타입체크됨.
+
+### 3) 결과 — 4어댑터 교차측정(4060 4bit 베이스, 동일 디코딩, 공정 하니스)
+| 어댑터 | 노드 | clean | 타입에러 | 점수 | 비고 |
+|---|---|---|---|---|---|
+| rank16 | 4060 | 4/6 | 5 | **83.3%** | egov 2파일 부분실패(타입불일치 TS2322·미정의 TS2304, 구문은 유효) |
+| r32round2 | 4060 | 3/6 | 5 | **83.3%** | tanstack 부분(TS2347)+egov 2파일 부분실패; **구문 전부 유효(붕괴 없음)** |
+| seq512 | 8060 | 5/6 | 7 | **83.3%** | egov-download **구문붕괴**(JSX 미완결 TS17008×5) |
+| seq640 | 8060 | 5/6 | 9 | **83.3%** | egov-download **구문붕괴**(JSX 미완결 TS17008×4) |
+
+### 4) 분석 (정직하게)
+- **천장 돌파 성공**: 자동 하베스트 100% 동률이던 게, tsc에선 변별이 생김. **그런데 4개 어댑터가
+  공교롭게도 전부 83.3%**(각자 정확히 1.0점 손실). 합산은 4자 동률.
+- 합성 4태스크(counter/useDebounce/tanstack/form)는 거의 다 만점 — 짧은 표준 패턴은 양쪽 완벽
+  (예외: r32round2가 tanstack에서 TS2347 1개).
+- 진짜 차이는 **실패의 모양**입니다(가장 긴 실파일 egov-download, LF 4321B에서 갈림):
+  - **8060(seq512/640)**: *완전 클린 비율 높음(5/6)* 그러나 egov-download에서 **JSX가 끊겨
+    구문붕괴**(0점) — 완결성/길이 한계.
+  - **4060(rank16/r32round2)**: *클린은 적음(3~4/6)* 그러나 **단 한 번도 구문붕괴 없이** 끝까지
+    유효한 코드를 내고 타입오류로만 부분감점 — 타입정확도 한계.
+- **현재 실질 박빙(~83%)**. "완전 클린이 많은 쪽(8060)" vs "절대 안 깨지는 쪽(4060)" — 가치관에
+  따라 승자가 갈림. 다음 변별: **더 긴/복잡 태스크 + 8060 egov-download 구문붕괴 원인 규명**
+  (max_new 잘림인지 fp16 생성 차이인지).
+
+### 5) 요청
+- 그쪽 DirectML 트윈을 **위 2개 함정 피해서** 구성 + **LF 정규화** 후, R3(EOS위생) 어댑터로
+  같은 6태스크 측정해 이 표에 append 부탁.
+- egov-download 구문붕괴: 그쪽 fp16에서도 재현되는지 확인 바람(어댑터 자체 특성인지, 베이스 차이인지).
+
+좋은 라운드입니다 — 천장을 같이 깼네요. 🤝 — 4060 팀

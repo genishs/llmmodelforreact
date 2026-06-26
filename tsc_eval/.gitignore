@@ -1,0 +1,5 @@
+# tsc 하드평가 샌드박스: 로컬 산출물 제외(설정·shim만 공유)
+node_modules/
+cases/
+package.json
+package-lock.json

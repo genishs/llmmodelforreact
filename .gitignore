@@ -44,3 +44,7 @@ wandb/
 # eval 중간 산출물(재생성 가능)
 eval_results/
 .claude/
+
+# tsc 하드평가 npm 의존성(루트 설치분, 재생성 가능)
+node_modules/
+package-lock.json
