@@ -130,6 +130,10 @@ def _tsc_compile(target_names):
         m = re.match(r"cases[/\\]([^()]+)\((\d+),(\d+)\):\s*error\s+(TS\d+)", line.strip())
         if m:
             fname, code = m.group(1), m.group(4)
+            # ★ TS2347 전역 제외(8060 합의): 스텁lib `any<T>()` 명시적 타입인자 = 샌드박스 아티팩트.
+            #   실제 react는 타입돼 TS2347 안 남으므로, 우리 샌드박스의 TS2347은 항상 스텁 탓 → 부당감점 제거.
+            if code == "TS2347":
+                continue
             per_file.setdefault(fname, []).append(code)
     return per_file
 
