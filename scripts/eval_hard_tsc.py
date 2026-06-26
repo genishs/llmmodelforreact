@@ -150,8 +150,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--adapter", required=True)
     ap.add_argument("--label", required=True)
-    ap.add_argument("--max-new", type=int, default=1024)
+    ap.add_argument("--max-new", type=int, default=2048)  # 1024는 egov-download(최장) 잘림 → 부당감점. 2048 헤드룸.
+    ap.add_argument("--only", default="", help="쉼표구분 task 이름만 측정(잘림검증 등 단일태스크용)")
     args = ap.parse_args()
+
+    only = set(s.strip() for s in args.only.split(",") if s.strip())
+    tasks = [t for t in TASKS if (not only or t[0] in only)]
+    ARCHIVE = ROOT / "eval_results" / "gen"  # 생성 출력 영구보존(실패 분석용)
+    ARCHIVE.mkdir(parents=True, exist_ok=True)
 
     CASES.mkdir(parents=True, exist_ok=True)
     # ★ 격리: cases/의 모든 .tsx 제거(디렉터리 전체 컴파일이라 다른 라벨이 남으면 결과 오염됨).
@@ -162,8 +168,8 @@ def main():
     tok, model = build_model(args.adapter)
     eos_id, suppress_tokens = gen_setup(tok)
 
-    files = []  # (task, filename)
-    for name, instr, inp, inline in TASKS:
+    files = []  # (task, filename, in_len, nchars, truncated)
+    for name, instr, inp, inline in tasks:
         if inp:
             # ★ EOL 정규화(LF): git hash-object는 autocrlf로 EOL을 숨기지만 모델은 raw 바이트를
             #   토크나이즈하므로 CRLF/LF가 입력에 반영됨. 양 노드 LF로 통일해야 진짜 바이트 동일.
@@ -179,21 +185,26 @@ def main():
             out = model.generate(**inputs, max_new_tokens=args.max_new, min_new_tokens=24,
                                  do_sample=False, pad_token_id=eos_id, eos_token_id=eos_id,
                                  suppress_tokens=suppress_tokens, repetition_penalty=1.1)
-        gen = tok.decode(out[0][in_len:], skip_special_tokens=True)
+        new_tokens = out.shape[1] - in_len
+        gen_ids = out[0][in_len:]
+        # 잘림 판정: eos 없이 max_new에 도달 = 생성이 잘림(JSX 미완결 등의 원인 후보)
+        truncated = bool(int(eos_id) not in gen_ids.tolist() and new_tokens >= args.max_new)
+        gen = tok.decode(gen_ids, skip_special_tokens=True)
         src = strip_fences(gen)
         fname = f"{args.label}__{name}.tsx"
         (CASES / fname).write_text(src, encoding="utf-8")
-        files.append((name, fname, in_len, len(src)))
-        print(f"  generated [{name:18s}] {len(src):5d} chars (in={in_len}tok)", flush=True)
+        (ARCHIVE / fname).write_text(src, encoding="utf-8")  # 영구보존
+        files.append((name, fname, in_len, len(src), truncated))
+        print(f"  generated [{name:18s}] {len(src):5d} chars "
+              f"(in={in_len}tok new={new_tokens}{' TRUNC!' if truncated else ''})", flush=True)
 
     print("  running tsc ...", flush=True)
     per_file = run_tsc()
 
     rows, grand = [], 0.0
-    for name, fname, in_len, nchars in files:
+    for name, fname, in_len, nchars, truncated in files:
         codes = per_file.get(fname, [])
         errors = len(codes)
-        syntax_ok = 0 if any(c.startswith("TS1") and c < "TS2000" for c in codes) else 1
         # TS1xxx = 구문/파싱 에러
         syntax_err = [c for c in codes if re.match(r"TS1\d{3}$", c)]
         syntax_ok = 0 if syntax_err else 1
@@ -204,12 +215,13 @@ def main():
             score = 0.0
             syntax_ok = 0
         rows.append(dict(task=name, errors=errors, syntax_ok=syntax_ok, clean=clean,
-                         score=round(score, 2), chars=nchars, codes=codes))
+                         score=round(score, 2), chars=nchars, truncated=truncated, codes=codes))
         grand += score
         flag = "CLEAN" if clean else ("EMPTY" if empty else ("SYNTAX!" if not syntax_ok else f"{errors}err"))
-        print(f"[{name:18s}] {flag:8s} score={score:.2f}  errs={errors} {','.join(codes[:6])}", flush=True)
+        print(f"[{name:18s}] {flag:8s} score={score:.2f}  errs={errors} "
+              f"{'TRUNC ' if truncated else ''}{','.join(codes[:6])}", flush=True)
 
-    maxp = len(TASKS)
+    maxp = len(files)
     pct = round(100 * grand / maxp, 1)
     n_clean = sum(r["clean"] for r in rows)
     tot_err = sum(r["errors"] for r in rows)
