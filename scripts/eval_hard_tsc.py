@@ -31,6 +31,7 @@ BASE = str(ROOT / "models" / "base" / "qwen2.5-coder-7b")
 EGOV = Path("d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src")
 SANDBOX = ROOT / "tsc_eval"
 CASES = SANDBOX / "cases"
+ARCHIVE_DIR = ROOT / "eval_results" / "gen"  # 생성 출력 영구보존(파일별 단독컴파일 소스)
 TSC = ROOT / "node_modules" / "typescript" / "bin" / "tsc"
 CAP = 5  # 에러 CAP: 5개 이상이면 점수 0
 
@@ -118,18 +119,31 @@ def strip_fences(text):
     return text[m.start():].strip() if m else text.strip()
 
 
-def run_tsc():
-    """샌드박스 전체 컴파일 → {파일명: [에러코드들]} 반환."""
+def _tsc_compile(target_names):
+    """cases/에 현재 있는 파일들을 컴파일 → {파일명: [에러코드]}."""
     proc = subprocess.run(
         ["node", str(TSC), "-p", str(SANDBOX / "tsconfig.json"), "--pretty", "false"],
         cwd=str(SANDBOX), capture_output=True, text=True)
     out = proc.stdout + proc.stderr
-    per_file = {}
+    per_file = {n: [] for n in target_names}
     for line in out.splitlines():
         m = re.match(r"cases[/\\]([^()]+)\((\d+),(\d+)\):\s*error\s+(TS\d+)", line.strip())
         if m:
             fname, code = m.group(1), m.group(4)
             per_file.setdefault(fname, []).append(code)
+    return per_file
+
+
+def run_tsc(fnames):
+    """★ 파일별 단독 컴파일: 각 파일을 혼자만 cases/에 두고 컴파일.
+    `declare module '*'` 와일드카드의 co-compile 간섭 가능성을 원천 제거(파일 간 독립 채점)."""
+    per_file = {}
+    for fname in fnames:
+        for f in CASES.glob("*.tsx"):
+            f.unlink()
+        (CASES / fname).write_text((ARCHIVE_DIR / fname).read_text(encoding="utf-8"), encoding="utf-8")
+        res = _tsc_compile([fname])
+        per_file[fname] = res.get(fname, [])
     return per_file
 
 
@@ -156,8 +170,7 @@ def main():
 
     only = set(s.strip() for s in args.only.split(",") if s.strip())
     tasks = [t for t in TASKS if (not only or t[0] in only)]
-    ARCHIVE = ROOT / "eval_results" / "gen"  # 생성 출력 영구보존(실패 분석용)
-    ARCHIVE.mkdir(parents=True, exist_ok=True)
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
     CASES.mkdir(parents=True, exist_ok=True)
     # ★ 격리: cases/의 모든 .tsx 제거(디렉터리 전체 컴파일이라 다른 라벨이 남으면 결과 오염됨).
@@ -193,13 +206,13 @@ def main():
         src = strip_fences(gen)
         fname = f"{args.label}__{name}.tsx"
         (CASES / fname).write_text(src, encoding="utf-8")
-        (ARCHIVE / fname).write_text(src, encoding="utf-8")  # 영구보존
+        (ARCHIVE_DIR / fname).write_text(src, encoding="utf-8")  # 영구보존(단독컴파일 소스)
         files.append((name, fname, in_len, len(src), truncated))
         print(f"  generated [{name:18s}] {len(src):5d} chars "
               f"(in={in_len}tok new={new_tokens}{' TRUNC!' if truncated else ''})", flush=True)
 
-    print("  running tsc ...", flush=True)
-    per_file = run_tsc()
+    print("  running tsc (파일별 단독컴파일) ...", flush=True)
+    per_file = run_tsc([f[1] for f in files])
 
     rows, grand = [], 0.0
     for name, fname, in_len, nchars, truncated in files:
