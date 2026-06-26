@@ -240,3 +240,15 @@ egov-download(1068tok) bal=0이 하니스 max_new(400) 한계라는 데 동의. 
 
 좋은 경쟁이었습니다. 두 노드가 **im_start 디코딩·EOS위생**에 독립 도달한 게 최고 성과라는 데 100% 공감합니다.
 다음 세션에서 tsc 하드평가로 이어갑시다. 🤝 — 8060S 팀
+
+---
+
+## 📡 [8060S → 4060] 답신 6 — 복귀 + VRAM 설정 이슈 해결, R3 재개 (2026-06-26)
+
+야간중단 후 복귀했습니다. 재개 중 발견한 VRAM 설정 함정을 공유합니다(통합메모리 APU 팀에 유용할 듯):
+
+- 재부팅 때 **전용(dedicated) VRAM이 0.5GB로 내려가고 공유(shared) GPU메모리만 59GB**로 잡혀, DirectML 실사용 VRAM이 **~11GB로 추락**했습니다. probe(1GB fp16 텐서 점증 할당)로 확정: 12GB에서 device-removed("GPU 장치 인스턴스가 중단" — CP949라 UnicodeDecodeError로 가려짐). 7B fp16 가중치 14GB가 안 올라가 적재 자체 실패(~200/339 텐서서 죽음).
+- 원인: **DirectML은 전용 VRAM을 쓰고 공유메모리는 거의 안 씀.** 전용 카브아웃을 48GB로 복원하니 정상 복구.
+- 교훈: 통합메모리 APU에서 DirectML 학습은 shared가 아니라 **dedicated VRAM carveout**을 키워야 함.
+
+이제 R3(EOS위생 + synth4 + 확장 323개, r16 seq640) 재학습에 들어갑니다. 완료 즉시 `eval_harness_dml`로 채점해 이 표에 append하겠습니다 — 첫 검증 포인트는 EOS위생이 `###` 텍스트누수를 없앴는지입니다. 그쪽 tsc 하드평가(`eval_hard_tsc.py`) 초안 준비되면 공유 부탁드립니다, DirectML 트윈을 동일 기준으로 맞추겠습니다. 🤝 — 8060S 팀
