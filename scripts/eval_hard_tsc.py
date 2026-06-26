@@ -39,14 +39,43 @@ FIM = ["<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|fim_pad|>",
 
 TS_CONV = "이 React 컴포넌트를 TypeScript(.tsx)로 변환해줘. props 타입을 interface로 정의하고 모든 함수/상태에 타입을 붙여줘. 코드만 출력해."
 
-# (name, instruction, input 상대경로 or "")  — 전부 TS 생성 태스크
+# 버그수정 태스크용 inline 입력(strict 위반 다수 — 모델이 고쳐 컴파일되게 해야 함)
+BUGGY_TS = """import React, { useState } from 'react';
+
+interface User { id: number; name: string; age: number; }
+
+function UserCard({ user }) {
+  const [count, setCount] = useState('0');
+  const handleClick = () => setCount(count + 1);
+  const isAdult: string = user.age >= 18;
+  const label: number = user.name;
+  return (
+    <div onClick={handleClick}>
+      {user.name} ({count}) {label}
+      {isAdult && <span>Adult</span>}
+    </div>
+  );
+}
+
+export default UserCard;
+"""
+
+# (name, instruction, egov 상대경로 or "", inline 입력 or "")  — 전부 TS 생성/수정 태스크
 TASKS = [
-    ("counter-ts", "Write a typed React counter component in TypeScript with a Props interface (initial: number). Output code only.", ""),
-    ("usedebounce-ts", "Create a generic custom hook useDebounce<T>(value: T, delay: number): T in TypeScript. Output code only.", ""),
-    ("tanstack-ts", "TanStack Query의 useInfiniteQuery로 무한 스크롤 상품 목록 컴포넌트를 TypeScript로 만들어줘. Product interface와 페이지 응답 타입을 정의하고 로딩/에러를 처리해줘. 코드만 출력.", ""),
-    ("form-ts", "Build a typed controlled login form component in TypeScript. Define a FormState interface and type all event handlers (React.ChangeEvent, React.FormEvent). Output code only.", ""),
-    ("egov-paging-ts", TS_CONV, "components/EgovPaging.jsx"),
-    ("egov-download-ts", TS_CONV, "pages/support/download/EgovDownloadDetail.jsx"),
+    # --- 합성 기본 4 (짧음) ---
+    ("counter-ts", "Write a typed React counter component in TypeScript with a Props interface (initial: number). Output code only.", "", ""),
+    ("usedebounce-ts", "Create a generic custom hook useDebounce<T>(value: T, delay: number): T in TypeScript. Output code only.", "", ""),
+    ("tanstack-ts", "TanStack Query의 useInfiniteQuery로 무한 스크롤 상품 목록 컴포넌트를 TypeScript로 만들어줘. Product interface와 페이지 응답 타입을 정의하고 로딩/에러를 처리해줘. 코드만 출력.", "", ""),
+    ("form-ts", "Build a typed controlled login form component in TypeScript. Define a FormState interface and type all event handlers (React.ChangeEvent, React.FormEvent). Output code only.", "", ""),
+    # --- egov 실파일 변환 2 ---
+    ("egov-paging-ts", TS_CONV, "components/EgovPaging.jsx", ""),
+    ("egov-download-ts", TS_CONV, "pages/support/download/EgovDownloadDetail.jsx", ""),
+    # --- 장문/복잡 5 (제네릭·판별유니온·컨텍스트·버그수정) ---
+    ("reducer-union-ts", "TypeScript로 todo 리스트의 useReducer를 작성해줘. Action을 판별유니온(discriminated union)으로 정의하고(ADD/REMOVE/TOGGLE, 각 payload 타입 다름), reducer의 switch가 모든 케이스를 타입안전하게 처리하도록. State와 Action 타입을 export. 코드만 출력.", "", ""),
+    ("datatable-generic-ts", "Build a reusable generic <DataTable<T>> React component in TypeScript. Props: rows: T[] and columns: { key: keyof T; header: string; render?: (value: T[keyof T], row: T) => React.ReactNode }[]. Render a table with typed cells. Output code only.", "", ""),
+    ("auth-context-ts", "TypeScript로 타입이 완전한 React AuthContext를 만들어줘. User 타입, AuthContextValue 인터페이스(user: User | null, login, logout), Provider 컴포넌트, 그리고 Provider 밖에서 쓰면 throw하는 useAuth() 훅. createContext의 기본값과 null 가드까지 타입안전하게. 코드만 출력.", "", ""),
+    ("usefetch-union-ts", "Create a generic custom hook useFetch<T>(url: string) in TypeScript that returns a discriminated union state: { status: 'loading' } | { status: 'error'; error: Error } | { status: 'success'; data: T }. Use useState and useEffect. Output code only.", "", ""),
+    ("bugfix-types-ts", "다음 TypeScript 컴포넌트는 strict 모드에서 타입에러가 여러 개 있어. 모든 타입에러를 고쳐서 컴파일되게 만들어줘(props에 interface 추가 포함). 수정된 전체 코드만 출력해.", "", BUGGY_TS),
 ]
 
 
@@ -108,7 +137,7 @@ def egov_inputs_meta():
     """eval에 쓰인 egov 입력 파일의 sha256 → 노드 간 '같은 코드' 핸드셰이크용."""
     import hashlib
     meta = {}
-    for _, _, inp in TASKS:
+    for _, _, inp, _inline in TASKS:
         if inp:
             raw = (EGOV / inp).read_bytes()
             norm = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")  # 모델이 보는 LF-정규화 입력
@@ -134,12 +163,14 @@ def main():
     eos_id, suppress_tokens = gen_setup(tok)
 
     files = []  # (task, filename)
-    for name, instr, inp in TASKS:
+    for name, instr, inp, inline in TASKS:
         if inp:
             # ★ EOL 정규화(LF): git hash-object는 autocrlf로 EOL을 숨기지만 모델은 raw 바이트를
             #   토크나이즈하므로 CRLF/LF가 입력에 반영됨. 양 노드 LF로 통일해야 진짜 바이트 동일.
             code = (EGOV / inp).read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
             prompt = f"### Instruction:\n{instr}\n\n### Input:\n{code}\n\n### Response:\n"
+        elif inline:
+            prompt = f"### Instruction:\n{instr}\n\n### Input:\n{inline}\n\n### Response:\n"
         else:
             prompt = f"### Instruction:\n{instr}\n\n### Response:\n"
         inputs = {k: v.to(model.device) for k, v in tok(prompt, return_tensors="pt").items()}
