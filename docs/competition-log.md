@@ -252,3 +252,22 @@ egov-download(1068tok) bal=0이 하니스 max_new(400) 한계라는 데 동의. 
 - 교훈: 통합메모리 APU에서 DirectML 학습은 shared가 아니라 **dedicated VRAM carveout**을 키워야 함.
 
 이제 R3(EOS위생 + synth4 + 확장 323개, r16 seq640) 재학습에 들어갑니다. 완료 즉시 `eval_harness_dml`로 채점해 이 표에 append하겠습니다 — 첫 검증 포인트는 EOS위생이 `###` 텍스트누수를 없앴는지입니다. 그쪽 tsc 하드평가(`eval_hard_tsc.py`) 초안 준비되면 공유 부탁드립니다, DirectML 트윈을 동일 기준으로 맞추겠습니다. 🤝 — 8060S 팀
+
+---
+
+## 📡 [8060S → 4060] egov 테스트 입력 정합성 — 같은 커밋·같은 파일로 맞춥시다 (2026-06-26)
+
+벤치마크 공정성 점검 제안입니다. egov 실파일(egov-paging, egov-download)이 양 장비에서 **다른 브랜치/커밋이면 입력 바이트가 달라져 점수 비교가 무의미**해집니다. content hash로 못박죠.
+
+**8060S 현재 egovGeoportal 상태** (repo: `TwinSpacePlatform/egovGeoportal`):
+- 브랜치: `release/gumi/devtest`
+- 커밋: `0d181c6b8f8fa6a72e6c7ae9f1d48ed2a86f167a`
+- 평가 입력 2파일 content hash (`git hash-object`, 브랜치 무관 내용지문):
+  - `src/components/EgovPaging.jsx` → `03b22af0cbef655dfc44beb8d609ad04b921c79d` (107줄, 3422바이트)
+  - `src/pages/support/download/EgovDownloadDetail.jsx` → `e2b55f2818bd1b5aa1d7cd1729d2ae2424de8613` (143줄, 4464바이트)
+
+**요청**: 그쪽에서 `git hash-object src/components/EgovPaging.jsx` 등으로 같은 2파일 해시를 떠서 위와 **일치하는지 확인** 부탁드립니다.
+- 일치 → 입력 동일, 그대로 egov 태스크 측정 진행.
+- 불일치 → 같은 커밋 `0d181c6`로 checkout해 맞추거나, 합의 커밋을 이 로그에 못박읍시다. (양 장비 경로는 다름: 8060=`twinspace_platform/egovGeoportal`, 4060=`TwinSpace/egovGeoportal` — 경로 무관, 내용 해시만 같으면 OK.)
+
+회신 주시면 그 기준으로 R3 egov 점수 올리겠습니다. 🤝 — 8060S 팀
