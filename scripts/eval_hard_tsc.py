@@ -79,6 +79,16 @@ TASKS = [
     ("bugfix-types-ts", "다음 TypeScript 컴포넌트는 strict 모드에서 타입에러가 여러 개 있어. 모든 타입에러를 고쳐서 컴파일되게 만들어줘(props에 interface 추가 포함). 수정된 전체 코드만 출력해.", "", BUGGY_TS),
 ]
 
+# ★ 확장 held-out eval셋(8060 답신15 제안, 진짜 일반화 측정): egov 실파일 JS→TS 변환.
+#   양 노드 학습 제외 필수. ⚠️ EgovInfoPopup/EgovCondition은 4060 학습셋(handcrafted_synth_egovreal)에
+#   변환타깃으로 있어 제외함 → 4개만 진짜 held-out. (LF sha256 양노드 일치 확인됨.)
+HELDOUT_TASKS = [
+    ("ho-select", TS_CONV, "components/EgovSelect.jsx", ""),
+    ("ho-gallery", TS_CONV, "components/EgovImageGallery.jsx", ""),
+    ("ho-about-org", TS_CONV, "pages/about/EgovAboutOrganization.jsx", ""),
+    ("ho-attachfile", TS_CONV, "components/EgovAttachFile.jsx", ""),
+]
+
 
 def build_model(adapter):
     tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)
@@ -151,11 +161,11 @@ def run_tsc(fnames):
     return per_file
 
 
-def egov_inputs_meta():
+def egov_inputs_meta(_META_TASKS=None):
     """eval에 쓰인 egov 입력 파일의 sha256 → 노드 간 '같은 코드' 핸드셰이크용."""
     import hashlib
     meta = {}
-    for _, _, inp, _inline in TASKS:
+    for _, _, inp, _inline in (_META_TASKS or TASKS):
         if inp:
             raw = (EGOV / inp).read_bytes()
             norm = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")  # 모델이 보는 LF-정규화 입력
@@ -170,10 +180,12 @@ def main():
     ap.add_argument("--label", required=True)
     ap.add_argument("--max-new", type=int, default=2048)  # 1024는 egov-download(최장) 잘림 → 부당감점. 2048 헤드룸.
     ap.add_argument("--only", default="", help="쉼표구분 task 이름만 측정(잘림검증 등 단일태스크용)")
+    ap.add_argument("--heldout", action="store_true", help="확장 held-out eval셋(egov 4파일 변환)으로 측정")
     args = ap.parse_args()
 
+    base_tasks = HELDOUT_TASKS if args.heldout else TASKS
     only = set(s.strip() for s in args.only.split(",") if s.strip())
-    tasks = [t for t in TASKS if (not only or t[0] in only)]
+    tasks = [t for t in base_tasks if (not only or t[0] in only)]
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
     CASES.mkdir(parents=True, exist_ok=True)
@@ -242,7 +254,7 @@ def main():
     pct = round(100 * grand / maxp, 1)
     n_clean = sum(r["clean"] for r in rows)
     tot_err = sum(r["errors"] for r in rows)
-    egov_meta = egov_inputs_meta()
+    egov_meta = egov_inputs_meta(base_tasks)
     print(f"\n[{args.label}] CLEAN {n_clean}/{maxp} compiles | total_errors={tot_err} | "
           f"SCORE {grand:.2f}/{maxp} = {pct}%", flush=True)
     print(f"  egov inputs: {egov_meta}", flush=True)
