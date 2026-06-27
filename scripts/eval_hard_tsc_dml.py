@@ -46,7 +46,11 @@ def main():
                     help="쉼표구분 태스크명만 실행(빈값=전체). 예: --only egov-download-ts")
     ap.add_argument("--heldout", action="store_true",
                     help="확장 held-out eval셋(egov 4파일 변환, EHT.HELDOUT_TASKS)으로 측정")
+    ap.add_argument("--base", default="",
+                    help="베이스 모델 경로 오버라이드(예: 14B). 빈값=기본 7B(BASE).")
     args = ap.parse_args()
+
+    base = args.base if args.base else BASE
 
     base_tasks = EHT.HELDOUT_TASKS if args.heldout else EHT.TASKS
     only = {s.strip() for s in args.only.split(",") if s.strip()}
@@ -61,12 +65,12 @@ def main():
 
     config = load_config()
     device = torch_directml.device(); dtype = torch.float16
-    tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    print(f"[로드] fp16 스트리밍 + 어댑터 {args.adapter}", flush=True)
-    model = stream_load_to_device(BASE, device, dtype)
+    print(f"[로드] fp16 스트리밍 + 어댑터 {args.adapter} (base={base})", flush=True)
+    model = stream_load_to_device(base, device, dtype)
     lc = config["lora"]
     acfg = json.loads((ROOT / args.adapter / "adapter_config.json").read_text())
     model = get_peft_model(model, LoraConfig(
