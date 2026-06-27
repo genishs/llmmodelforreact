@@ -60,6 +60,8 @@ def main():
                     help="qkvo=기존(q,k,v,o), qkvo_mlp=+MLP(gate,up,down) 용량 확대")
     ap.add_argument("--max-steps", type=int, default=0,
                     help="0=full. >0이면 그만큼만 학습(스모크용, 저장 생략)")
+    ap.add_argument("--epochs", type=int, default=0, help="num_train_epochs 오버라이드(0=config)")
+    ap.add_argument("--base", default="", help="베이스 모델 경로 오버라이드(0=config; 예: 다른 베이스 실험)")
     args = ap.parse_args()
     smoke = args.max_steps > 0
 
@@ -67,7 +69,7 @@ def main():
     print(f"[CUDA] {torch.cuda.get_device_name(0)}")
 
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
-    base = cfg["model"]["base_model"]
+    base = args.base or cfg["model"]["base_model"]
 
     tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     if tok.pad_token is None:
@@ -122,7 +124,7 @@ def main():
     t = cfg["training"]
     targs = TrainingArguments(
         output_dir=args.out,
-        num_train_epochs=t["num_train_epochs"],
+        num_train_epochs=(args.epochs or t["num_train_epochs"]),
         per_device_train_batch_size=t["per_device_train_batch_size"],
         gradient_accumulation_steps=t["gradient_accumulation_steps"],
         learning_rate=float(t["learning_rate"]),

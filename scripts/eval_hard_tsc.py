@@ -90,14 +90,15 @@ HELDOUT_TASKS = [
 ]
 
 
-def build_model(adapter):
-    tok = AutoTokenizer.from_pretrained(BASE, trust_remote_code=True)
+def build_model(adapter, base=None):
+    base = base or BASE
+    tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                              bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
     model = AutoModelForCausalLM.from_pretrained(
-        BASE, quantization_config=bnb, device_map="auto", trust_remote_code=True)
+        base, quantization_config=bnb, device_map="auto", trust_remote_code=True)
     model = PeftModel.from_pretrained(model, str(ROOT / adapter))
     model.eval()
     return tok, model
@@ -181,6 +182,7 @@ def main():
     ap.add_argument("--max-new", type=int, default=2048)  # 1024는 egov-download(최장) 잘림 → 부당감점. 2048 헤드룸.
     ap.add_argument("--only", default="", help="쉼표구분 task 이름만 측정(잘림검증 등 단일태스크용)")
     ap.add_argument("--heldout", action="store_true", help="확장 held-out eval셋(egov 4파일 변환)으로 측정")
+    ap.add_argument("--base", default="", help="베이스 모델 경로 오버라이드(다른 베이스 어댑터 측정용)")
     args = ap.parse_args()
 
     base_tasks = HELDOUT_TASKS if args.heldout else TASKS
@@ -194,7 +196,7 @@ def main():
     for f in CASES.glob("*.tsx"):
         f.unlink()
 
-    tok, model = build_model(args.adapter)
+    tok, model = build_model(args.adapter, base=(args.base or None))
     eos_id, suppress_tokens = gen_setup(tok)
 
     files = []  # (task, filename, in_len, nchars, truncated)
