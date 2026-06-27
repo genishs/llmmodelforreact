@@ -42,11 +42,24 @@ FastAPI + MCP. GitHub: `genishs/llmmodelforreact`(main).
 - **교훈(양 노드 독립확증)**: 데이터 양↑ = 분포희석+과적합으로 회귀. 핵심스킬 적정량이 sweet spot.
   진짜 레버 = 용량(+MLP)·품질·정직한 held-out 측정.
 
-## 상시 백그라운드 동기화 (standing loop)
-세션 중 `/loop`(자기 페이스)로 주기적 동기화를 가동한다 (사용자 지시, 2026-06-27):
-1. `git pull`로 4060 신규 `from-4060.md`/`scores-4060.jsonl` 수신 → 있으면 사용자에게 요약 보고.
-2. 학습/측정 결과 발생 시 `from-8060.md` + `scores-8060.jsonl`에 기록하고 `git push`.
-3. 진행 없으면 상태만 남기고 대기. push/pull은 자동, **중대·비가역·외부영향 결정만 사용자 확인.**
+## 자동화 페르소나 & 백그라운드 에이전트 (2026-06-27 사용자 지시)
+
+### approval-deputy (승인 대행 페르소나)
+사용자 부재 중 권한 요청을 **감지·대신 처리**한다. 사용자 확약: *"필요시 내가 인터럽트를 걸도록 할께."*
+- **자동 승인(AUTO)** — 안전작업 전부 + **학습/통신 전부**:
+  git pull/push/fetch·gh(읽기/PR/이슈 조회), 로컬 커밋, 14B/7B **학습 실행**, eval 측정,
+  comms append+push, 다운로드/재시도, 파일 read/grep/edit. → 권한창 없이 즉시 진행.
+- **보류(HOLD) → 사용자 확인 필수**: force-push, `reset --hard`, `git clean`, `rm -rf/-r`,
+  **외부 영향**(새 public repo 생성, 이슈/PR 공개 게시, 외부 유료 API 호출, 비밀 노출).
+- 보류건은 큐에 모아 한 번에 요약 보고. 사용자가 인터럽트로 중단·수정 가능.
+
+### github-sync (주기 동기화 에이전트)
+CronCreate로 **세션 중 4분마다(≤5분 보장)** 자동 가동 (durable=false, 세션 종료 시 정지·재무장).
+gh 인증=genishs(repo scope, keyring) → **별도 인증 없이** push/pull. 매 사이클:
+1. `git pull` → 4060 신규 `from-4060.md`/`scores-4060.jsonl` 있으면 사용자에게 **요약 보고**.
+2. 8060 학습/측정 결과 발생 시 `from-8060.md`+`scores-8060.jsonl` append → `git push`.
+3. 14B 다운로드 진행/완료 감지 시 보고. 진행 없으면 1줄 상태만, 조용히 대기.
+4. push/pull은 자동, **HOLD 항목만 사용자 확인.** 충돌·force 필요 시 절대 강제 안 함→보고.
 
 ## 14B fp16 LoRA 재도전 (진행 중, 2026-06-27)
 - 39GB 천장 발견으로 재개방(29GB 가중치 < 39GB). Qwen2.5-Coder-14B-Instruct fp16.
