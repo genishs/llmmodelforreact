@@ -35,16 +35,17 @@ GPU 피크 ~30~32GB(39 천장 아래). **결론: 14B fp16 LoRA가 DirectML/Windo
   새 세션에서 재점검·감시 재무장 후 완주 대기 중.
 - 어댑터는 epoch 2 완주 후 1회 저장(`train_directml.py:331`). → 중단 금지, 완주 필수.
 
-### S5. (예정) 어댑터 벤치 비교 — 캐논 held-out 측정
-완주 직후 자동 실행:
-```
-python scripts/eval_hard_tsc_dml.py \
-  --adapter models/qwen-react-lora-14b-v1 \
-  --label 8060-14b-v1-seq256e2 --heldout --max-new 4096 \
-  --base "<14B snapshot 경로>"
-```
-→ `eval_results/8060-14b-v1-seq256e2.json` 생성 → 점수 `scores-8060.jsonl` append → 4060 7B r4mlp와 대조.
-(이번 단계 위해 `eval_hard_tsc_dml.py`에 `--base` 오버라이드 추가함.)
+### S5. 어댑터 벤치 비교 — 캐논 held-out 측정 ✅ (2026-06-28)
+실행: `eval_hard_tsc_dml.py --adapter qwen-react-lora-14b-v1 --label 8060-14b-v1-seq256e2 --heldout --max-new 4096 --base <14B snapshot>`
+(이 단계 위해 `eval_hard_tsc_dml.py`에 `--base` 오버라이드 추가.)
+- **결과: SCORE 4.40/7 = 62.9%** (clean 3/7, errs 14). `eval_results/8060-14b-v1-seq256e2.json`, `scores-8060.jsonl` 등록.
+- per_task: select 1.0 · gallery 0.8(TS2554) · about-org 1.0 · **attachfile 0.0**(TS18047 null·2322·2345·2554) · admin-dae 1.0 · admin-mlist 0.6(TS2554×2) · **admin-medit(22KB) 0.0**(4096잘림→TS17008).
+- **정직한 해석**: 공통4태스크 비교 시 14B=70% < 8060 r5mlp 80% < 4060 r4mlp 95%. "큰 베이스"만으론 부족 — 이번 14B는 qkvo만(MLP無)+r4데이터+seq256 구성이라 4060이 증명한 레버(qkvo_mlp+데이터)를 미적용. ∴ 용량레버·데이터 > base크기.
+- **운영 교훈**: 22KB 입력+4096생성 시 호스트 RAM 2.1GB까지 압박(SIGKILL 직전)·태스크당 ~20분. 마지막 medit 태스크가 병목. 워처는 PID 단위 사망감지로(잔류 python 오탐 회피). 살림툴 `scripts/score_saved_dml.py`(저장본 오프라인 채점) 준비.
+- ⚠️ 측정기준 변경: 이번이 **새 캐논 heldout7-mn4096 첫 측정**(기존은 heldout4-mn2048) → 직접비교는 공통태스크로만. 4060에 r4mlp 새 캐논 재측정 요청함.
+
+### S5b. (다음 후보) 14B qkvo_mlp 또는 seq512
+이번 결과로 방향: ① **14B를 qkvo_mlp(+MLP 레버)로 재학습** — 4060이 증명한 일반화 레버를 14B에 적용(가장 유망), 또는 ② seq512 본진(고정seq 메모리안정). 둘 다 재부팅 클린 후 GPU 여유 확보 권장.
 
 ### S6. (예정) seq512 본진
 재부팅 클린 후 seq512(7B 챔피언과 동조건) 본진 학습 → 동일 캐논 측정 → scores 등록.
