@@ -14,6 +14,12 @@
 어느 단계서 막히든 즉시 사유 출력하고 중단 → Windows/DirectML 14B 가부 확정.
 """
 import os, sys, time, gc, argparse
+# Windows 콘솔 cp949가 ≈ 등 비-cp949 문자를 못 찍어 죽는 문제 방지 → stdout/stderr UTF-8 고정
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import torch
