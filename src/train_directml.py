@@ -177,6 +177,9 @@ def main():
     ap.add_argument("--train-file", default="", help="train_file 오버라이드(빈값=config)")
     ap.add_argument("--base", default="", help="base_model 오버라이드(빈값=config). 14B 등 다른 베이스용")
     ap.add_argument("--epochs", type=int, default=0, help="num_train_epochs 오버라이드(0=config)")
+    ap.add_argument("--optim", choices=["adamw", "sgd"], default="adamw",
+                    help="옵티마이저. sgd=상태 적음→메모리 절감+lerp CPU폴백 회피(14B 고seq용)")
+    ap.add_argument("--momentum", type=float, default=0.9, help="SGD 모멘텀(0=상태 0, 최대 절감)")
     ap.add_argument("--no-eos", action="store_true",
                     help="EOS 위생 끔(seq512 pre-EOS 레시피 재현 — R3 회귀 회피)")
     args = ap.parse_args()
@@ -220,7 +223,12 @@ def main():
                   else make_loader(dcfg["val_file"], tok, max_len, bs, shuffle=False, add_eos=add_eos))
 
     trainable = [p for p in model.parameters() if p.requires_grad]
-    optim = torch.optim.AdamW(trainable, lr=float(tcfg["learning_rate"]), eps=1e-4)
+    _lr = float(tcfg["learning_rate"])
+    if args.optim == "sgd":
+        optim = torch.optim.SGD(trainable, lr=_lr, momentum=args.momentum)
+        log(f"옵티마이저=SGD(momentum={args.momentum}) — 메모리 절감/lerp폴백 회피")
+    else:
+        optim = torch.optim.AdamW(trainable, lr=_lr, eps=1e-4)
 
     smoke = args.smoke > 0
     epochs = 1 if smoke else (args.epochs if args.epochs > 0 else int(tcfg["num_train_epochs"]))
