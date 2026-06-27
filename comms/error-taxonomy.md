@@ -21,3 +21,11 @@
 
 ## 우선 보강 후보 (양 노드 공통, 데이터 양 아닌 질로)
 1. **import 보존** (held-out 최대 레버, 계속) 2. **버그수정 쌍**(8060 약점) 3. **React.FC children**(양 노드).
+
+## 갱신 (2026-06-28, heldout7 명승부 1R)
+| 스킬 | TS코드 | 관측 | 비고 |
+|---|---|---|---|
+| **함수 인자수** | TS2554 | 8060 14B-v1 ×4(gallery/attachfile/admin-mlist), 4060 held-out attachfile | 양 노드 공통. 호출 인자수 정확 학습쌍 보강. |
+| **null-safety** | TS18047/TS18048 | 8060 14B attachfile | optional chaining / null 가드. |
+| **admin 도메인 일반화** | TS2322 등 | 4060 r4mlp admin-dae 3e(0.40) | r4mlp는 egov컴포넌트 위주 학습→admin 폼 약함. ★14B는 admin-dae 1.0(큰베이스 도메인폭). → 증류 teacher 후보. |
+| **초장문(22KB) 생성완결** | TS17008(4096잘림) | 양 노드 admin-medit 0.0 | max_new 한계. ≥8K 필요하나 비현실(14B 20분/태스크). 별도 카테고리. |
