@@ -28,6 +28,29 @@ FastAPI + MCP. GitHub: `genishs/llmmodelforreact`(main).
 - 작업 단계마다 **로컬 커밋 계속**. 연관 레포 동시 변경 시 커밋 메시지에 "함께 머지/배포 필수" 명시.
 - 수정 후 구동·확인 가이드(.md)는 같은 브랜치에 함께 커밋.
 
+### ⚙️ 머신 셋업 — 권장 allowlist (다른 위치/장비에서 동일 룰 적용용)
+`.claude/`는 gitignore(머신별 토큰·경로) → 설정 파일 자체는 push 안 됨. **새 장비에서 이 프로젝트를
+무인 자동화로 돌리려면** 아래를 그 장비의 `.claude/settings.local.json`에 복사하고 `gh auth login`만
+하면 된다(토큰은 keyring 로컬 저장, 레포에 안 들어감). 이 블록이 8060 설정의 **공유 정본**이다.
+```jsonc
+{ "permissions": {
+  "allow": [
+    "Bash(./venv/Scripts/python.exe:*)",          // 학습/추론/다운로드 실행
+    "Bash(git fetch:*)","Bash(git pull:*)","Bash(git push:*)","Bash(gh:*)",
+    "Bash(git add:*)","Bash(git commit:*)","Bash(git status:*)","Bash(git log:*)",
+    "Bash(git diff:*)","Bash(git branch:*)","Bash(git remote:*)","Bash(git stash:*)",
+    "Bash(tee:*)","Bash(echo:*)","Bash(nohup:*)","Bash(kill:*)","Bash(ps:*)","Bash(date:*)",
+    "Bash(cat:*)","Bash(tail:*)","Bash(head:*)","Bash(ls:*)","Bash(find:*)",
+    "Bash(grep:*)","Bash(wc:*)","Bash(du:*)","Bash(cp:*)","Bash(sleep:*)","Bash(mkdir -p logs)"
+  ],
+  "deny": [                                          // approval-deputy의 HOLD와 동일 — 절대 자동실행 금지
+    "Bash(git push --force:*)","Bash(git push -f:*)","Bash(git push --force-with-lease:*)",
+    "Bash(git reset --hard:*)","Bash(git clean:*)","Bash(rm -rf:*)","Bash(rm -r:*)","Bash(rmdir:*)"
+  ],
+  "enabledMcpjsonServers": ["react-assistant"]
+} }
+```
+
 ## 8060 ↔ 4060 경쟁 통신 프로토콜 (maildir)
 - 8060(이 디바이스, fp16 DirectML) vs 4060(장비#2 shas-sgshs, 4bit CUDA QLoRA) 모델품질 경쟁.
   **통신 = GitHub push/pull** (같은 레포, 4060이 pull로 수신).
