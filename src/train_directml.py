@@ -175,6 +175,8 @@ def main():
     ap.add_argument("--lora-mlp", action="store_true",
                     help="MLP(gate/up/down_proj)도 LoRA 타깃에 추가(capacity 확대)")
     ap.add_argument("--train-file", default="", help="train_file 오버라이드(빈값=config)")
+    ap.add_argument("--base", default="", help="base_model 오버라이드(빈값=config). 14B 등 다른 베이스용")
+    ap.add_argument("--epochs", type=int, default=0, help="num_train_epochs 오버라이드(0=config)")
     ap.add_argument("--no-eos", action="store_true",
                     help="EOS 위생 끔(seq512 pre-EOS 레시피 재현 — R3 회귀 회피)")
     args = ap.parse_args()
@@ -201,7 +203,7 @@ def main():
 
     tcfg = config["training"]
     dcfg = config["data"]
-    model_path = config["model"]["base_model"]
+    model_path = args.base if args.base else config["model"]["base_model"]
 
     model, tok = build(model_path, device, config, dtype, args.grad_ckpt)
 
@@ -221,7 +223,7 @@ def main():
     optim = torch.optim.AdamW(trainable, lr=float(tcfg["learning_rate"]), eps=1e-4)
 
     smoke = args.smoke > 0
-    epochs = 1 if smoke else int(tcfg["num_train_epochs"])
+    epochs = 1 if smoke else (args.epochs if args.epochs > 0 else int(tcfg["num_train_epochs"]))
     total_steps = (len(train_loader) // accum) * epochs
     sched = get_cosine_schedule_with_warmup(
         optim, int(total_steps * tcfg["warmup_ratio"]), max(total_steps, 1)
