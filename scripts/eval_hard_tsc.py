@@ -83,10 +83,16 @@ TASKS = [
 #   양 노드 학습 제외 필수. ⚠️ EgovInfoPopup/EgovCondition은 4060 학습셋(handcrafted_synth_egovreal)에
 #   변환타깃으로 있어 제외함 → 4개만 진짜 held-out. (LF sha256 양노드 일치 확인됨.)
 HELDOUT_TASKS = [
+    # 8060 1차 제안 4 (LF sha256 양노드 일치 확인)
     ("ho-select", TS_CONV, "components/EgovSelect.jsx", ""),
     ("ho-gallery", TS_CONV, "components/EgovImageGallery.jsx", ""),
     ("ho-about-org", TS_CONV, "pages/about/EgovAboutOrganization.jsx", ""),
     ("ho-attachfile", TS_CONV, "components/EgovAttachFile.jsx", ""),
+    # 4060 기여분 3 (admin 도메인, 답신22; 양노드 학습 미투입 확인). 22KB는 초장문(max_new=4096도 잘릴수)
+    ("ho-admin-dae", TS_CONV, "pages/admin/dataaccess/EgovAdminDataAccessEdit.jsx", ""),
+    ("ho-admin-mlist", TS_CONV, "pages/admin/members/EgovAdminMemberList.jsx", ""),
+    ("ho-admin-medit", TS_CONV, "pages/admin/members/EgovAdminMemberEdit.jsx", ""),
+    # 8060 기여분 3 — 경로/sha256 수신 후 추가 예정
 ]
 
 
