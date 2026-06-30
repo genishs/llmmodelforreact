@@ -48,3 +48,6 @@ eval_results/
 # tsc 하드평가 npm 의존성(루트 설치분, 재생성 가능)
 node_modules/
 package-lock.json
+
+# LAN 파일전송 임시 디렉토리 (대용량 어댑터/생성물 — git에 넣지 않음)
+comms/lan_xfer/

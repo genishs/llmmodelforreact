@@ -25,12 +25,29 @@ lan_chat.py — 8060 ↔ 4060 직결 실시간 채팅 릴레이 (stdlib 전용, 
   python scripts/lan_chat.py poll  --host H --port P [--since N]
   python scripts/lan_chat.py watch --host H --port P   # 새 메시지 실시간 tail
 """
-import argparse, json, os, sys, time, threading, urllib.request, urllib.parse
+import argparse, hashlib, json, os, sys, time, threading, urllib.request, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "comms", "lan_chat_log.jsonl")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_PATH = os.path.join(REPO_ROOT, "comms", "lan_chat_log.jsonl")
 _lock = threading.Lock()
+
+
+def _safe_path(rel):
+    """REPO_ROOT 밖 접근 차단(path traversal 방지). 절대경로 반환 or None."""
+    rel = (rel or "").lstrip("/").replace("\\", "/")
+    full = os.path.abspath(os.path.join(REPO_ROOT, rel))
+    if full == REPO_ROOT or full.startswith(REPO_ROOT + os.sep):
+        return full
+    return None
+
+
+def _sha256_file(path, chunk=1 << 20):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(chunk), b""):
+            h.update(blk)
+    return h.hexdigest()
 
 
 def _load():
@@ -74,6 +91,40 @@ class Handler(BaseHTTPRequestHandler):
             msgs = _load()
             new = [m for m in msgs if m.get("i", 0) > since]
             self._json(200, {"last": (msgs[-1]["i"] if msgs else 0), "messages": new})
+        elif parsed.path == "/files":
+            qs = urllib.parse.parse_qs(parsed.query)
+            rel = qs.get("dir", [""])[0]
+            d = _safe_path(rel)
+            if not d or not os.path.isdir(d):
+                return self._json(404, {"error": "no such dir"})
+            items = []
+            for nm in sorted(os.listdir(d)):
+                p = os.path.join(d, nm)
+                items.append({"name": nm, "is_dir": os.path.isdir(p),
+                              "size": (os.path.getsize(p) if os.path.isfile(p) else 0)})
+            self._json(200, {"dir": rel, "items": items})
+        elif parsed.path == "/sha":
+            qs = urllib.parse.parse_qs(parsed.query)
+            p = _safe_path(qs.get("name", [""])[0])
+            if not p or not os.path.isfile(p):
+                return self._json(404, {"error": "no such file"})
+            self._json(200, {"name": qs.get("name", [""])[0], "size": os.path.getsize(p),
+                             "sha256": _sha256_file(p)})
+        elif parsed.path == "/file":
+            qs = urllib.parse.parse_qs(parsed.query)
+            p = _safe_path(qs.get("name", [""])[0])
+            if not p or not os.path.isfile(p):
+                return self._json(404, {"error": "no such file"})
+            sz = os.path.getsize(p)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(sz))
+            self.send_header("X-Sha256", _sha256_file(p))
+            self.end_headers()
+            with open(p, "rb") as f:
+                for blk in iter(lambda: f.read(1 << 20), b""):
+                    self.wfile.write(blk)
+            print(f"  -> served {qs.get('name',[''])[0]} ({sz} bytes)", flush=True)
         elif parsed.path == "/":
             msgs = _load()
             lines = [f"[{m['i']}] {time.strftime('%H:%M:%S', time.localtime(m['ts']))} "
@@ -90,7 +141,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self):
-        if urllib.parse.urlparse(self.path).path != "/send":
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/file":
+            return self._recv_file()
+        if path != "/send":
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(n).decode("utf-8", errors="replace") if n else "{}"
@@ -107,6 +161,33 @@ class Handler(BaseHTTPRequestHandler):
         _append(msg)
         print(f"  <- [{i}] {msg['from']}: {msg['text'][:80]}", flush=True)
         self._json(200, {"i": i})
+
+    def _recv_file(self):
+        """POST /file: 헤더 X-Filename(REPO_ROOT 상대경로) + X-Sha256 → 스트리밍 저장·검증.
+        업로드 대상은 comms/lan_xfer/incoming/ 아래로 강제(덮어쓰기 사고 방지)."""
+        fn = self.headers.get("X-Filename", "").lstrip("/").replace("\\", "/")
+        sha_exp = self.headers.get("X-Sha256", "")
+        n = int(self.headers.get("Content-Length", 0))
+        if not fn:
+            return self._json(400, {"error": "missing X-Filename"})
+        dest = _safe_path(os.path.join("comms/lan_xfer/incoming", fn))
+        if not dest:
+            return self._json(400, {"error": "bad path"})
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        h = hashlib.sha256()
+        got = 0
+        with open(dest, "wb") as f:
+            while got < n:
+                blk = self.rfile.read(min(1 << 20, n - got))
+                if not blk:
+                    break
+                f.write(blk); h.update(blk); got += len(blk)
+        sha_got = h.hexdigest()
+        ok = (not sha_exp) or (sha_exp == sha_got)
+        rel = os.path.relpath(dest, REPO_ROOT).replace("\\", "/")
+        print(f"  <= recv {rel} ({got} bytes) sha_ok={ok}", flush=True)
+        self._json(200 if ok else 422,
+                   {"saved": rel, "bytes": got, "sha256": sha_got, "sha_ok": ok})
 
 
 def cmd_serve(args):
@@ -158,6 +239,50 @@ def cmd_watch(args):
         time.sleep(2)
 
 
+def cmd_files(args):
+    url = f"http://{args.host}:{args.port}/files?dir={urllib.parse.quote(args.dir)}"
+    with urllib.request.urlopen(url, timeout=15) as r:
+        res = json.loads(r.read().decode("utf-8"))
+    print(f"dir={res['dir'] or '.'}")
+    for it in res["items"]:
+        kind = "DIR " if it["is_dir"] else f"{it['size']:>12,}"
+        print(f"  {kind}  {it['name']}")
+
+
+def cmd_getfile(args):
+    """LAN 피어에서 파일 다운로드 + sha256 검증."""
+    url = f"http://{args.host}:{args.port}/file?name={urllib.parse.quote(args.name)}"
+    out = args.out or os.path.join("comms/lan_xfer/incoming", os.path.basename(args.name))
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    h = hashlib.sha256(); got = 0
+    with urllib.request.urlopen(url, timeout=120) as r:
+        sha_exp = r.headers.get("X-Sha256", "")
+        with open(out, "wb") as f:
+            for blk in iter(lambda: r.read(1 << 20), b""):
+                f.write(blk); h.update(blk); got += len(blk)
+    ok = (not sha_exp) or (sha_exp == h.hexdigest())
+    print(f"saved {out} ({got:,} bytes) sha_ok={ok}" + ("" if ok else f"\n  EXPECTED {sha_exp}\n  GOT      {h.hexdigest()}"))
+    if not ok:
+        sys.exit(3)
+
+
+def cmd_putfile(args):
+    """로컬 파일을 LAN 피어로 업로드(피어 comms/lan_xfer/incoming/<as>에 저장) + sha256 검증."""
+    src = args.name
+    if not os.path.isfile(src):
+        print(f"no such file: {src}"); sys.exit(1)
+    sha = _sha256_file(src); sz = os.path.getsize(src)
+    remote = args.as_name or os.path.basename(src)
+    url = f"http://{args.host}:{args.port}/file"
+    with open(src, "rb") as f:
+        req = urllib.request.Request(url, data=f, method="POST",
+                                     headers={"X-Filename": remote, "X-Sha256": sha,
+                                              "Content-Length": str(sz),
+                                              "Content-Type": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            print(json.loads(r.read().decode("utf-8")))
+
+
 def cmd_dump(args):
     """릴레이 로그(jsonl)를 사람이 읽기 좋은 markdown transcript로 렌더.
     사용자가 git에서 LAN 대화를 확인할 수 있도록 체크포인트마다 호출 → 커밋/푸시."""
@@ -207,6 +332,9 @@ def main():
     s = sub.add_parser("send"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--from", required=True); s.add_argument("--text", required=True); s.set_defaults(func=cmd_send)
     s = sub.add_parser("poll"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--since", type=int, default=0); s.set_defaults(func=cmd_poll)
     s = sub.add_parser("watch"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--since", type=int, default=0); s.set_defaults(func=cmd_watch)
+    s = sub.add_parser("files"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--dir", default=""); s.set_defaults(func=cmd_files)
+    s = sub.add_parser("getfile"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--name", required=True); s.add_argument("--out", default=None); s.set_defaults(func=cmd_getfile)
+    s = sub.add_parser("putfile"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--name", required=True); s.add_argument("--as", dest="as_name", default=None); s.set_defaults(func=cmd_putfile)
     s = sub.add_parser("dump"); s.add_argument("--out", default=None); s.set_defaults(func=cmd_dump)
     s = sub.add_parser("wake"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--since", type=int, default=0); s.add_argument("--me", default="4060"); s.add_argument("--interval", type=float, default=2.0); s.add_argument("--timeout", type=float, default=0); s.set_defaults(func=cmd_wake)
     # Windows 콘솔 기본 cp949 → 한글/이모지 print 시 크래시. UTF-8로 고정(서버 로깅·클라 출력 공통).
