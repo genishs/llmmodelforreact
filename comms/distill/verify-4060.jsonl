@@ -1,0 +1,6 @@
+{"file": "pages/admin/catalog/EgovAdminCatalogList.jsx", "out": "EgovAdminCatalogList.tsx", "status": "pass", "errors": [], "lines": 148, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
+{"file": "pages/admin/appstat/EgovAdminAppStatList.jsx", "out": "EgovAdminAppStatList.tsx", "status": "pass", "errors": [], "lines": 212, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
+{"file": "pages/admin/catalog/EgovAdminCatalogEdit.jsx", "out": "EgovAdminCatalogEdit.tsx", "status": "pass", "errors": [], "lines": 245, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
+{"file": "pages/admin/manager/EgovAdminPasswordUpdate.jsx", "out": "EgovAdminPasswordUpdate.tsx", "status": "pass", "errors": [], "lines": 194, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
+{"file": "pages/admin/notice/AdminNoticeCreatePopup.jsx", "out": "AdminNoticeCreatePopup.tsx", "status": "pass", "errors": [], "lines": 96, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
+{"file": "pages/admin/notice/EgovAdminNoticeDetail.jsx", "out": "EgovAdminNoticeDetail.tsx", "status": "pass", "errors": [], "lines": 241, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
