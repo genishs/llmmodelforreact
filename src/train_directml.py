@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-DirectML(AMD GPU) 직접 학습 스크립트 — 7B LoRA fine-tuning.
+로컬 GPU 직접 학습 스크립트 — LoRA fine-tuning. (DirectML / ROCm·CUDA 이중 백엔드)
 
-기존 train.py는 CPU 전용(통합 16GB VRAM 시절 작성). 이 스크립트는 VRAM 48GB
-환경을 위해:
-  1) 모델을 meta(빈 가중치)로 만든 뒤 safetensors 텐서를 하나씩 fp32로 변환해
-     DirectML VRAM에 직접 올린다(host RAM 피크 = 가장 큰 텐서 1개분).
-  2) HF Trainer 대신 DirectML을 인식하는 커스텀 학습 루프를 쓴다.
+기존 train.py는 CPU 전용(통합 16GB VRAM 시절 작성). 이 스크립트는:
+  1) 모델을 meta(빈 가중치)로 만든 뒤 safetensors 텐서를 하나씩 변환해 GPU에 직접
+     적재(host RAM 피크 = 가장 큰 텐서 1개분 → 호스트 RAM 적어도 29GB+ 적재 가능).
+  2) HF Trainer 대신 백엔드 인지 커스텀 학습 루프.
+  3) **--backend로 directml(Windows 기본) / cuda(ROCm·CUDA) 전환.** cuda는 empty_cache로
+     단편화를 해소해 더 높은 seq가 가능하고, bf16·PYTORCH_CUDA_ALLOC_CONF가 작동.
+     (DirectML은 empty_cache 부재로 14B fp16이 seq256에 막힘 — ROCm 전환의 동기.)
 
 실행:
-  python src/train_directml.py --smoke 2      # 스모크: 2 step만, 저장 안 함
-  python src/train_directml.py                # 본런 (config 기준)
+  python src/train_directml.py --smoke 2                       # DirectML 스모크
+  python src/train_directml.py --backend cuda --dtype bf16 ... # ROCm/CUDA 본런(고seq)
 """
 
 import os
@@ -30,7 +32,6 @@ import psutil
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", line_buffering=True)
 
-import torch_directml
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -55,6 +56,32 @@ def log(msg):
 
 def ram_avail_gb():
     return psutil.virtual_memory().available / 1024**3
+
+
+def resolve_backend(name):
+    """백엔드 추상화 → (backend, device, device_name, empty_cache_fn, mem_used_gb_fn).
+
+    - directml: torch_directml(이 디바이스 Windows 기본). empty_cache 없음(no-op),
+      메모리 측정 불안정. bf16 미지원·fp16 강제.
+    - cuda: ROCm/HIP(또는 NVIDIA). **torch.cuda.empty_cache 작동 → 단편화 해소로 고seq 가능**,
+      bf16 지원, PYTORCH_CUDA_ALLOC_CONF 등 env var 유효. gfx1151 TheRock(Windows) / Linux ROCm.
+    """
+    if name == "auto":
+        name = "cuda" if torch.cuda.is_available() else "directml"
+    if name == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("--backend cuda인데 torch.cuda.is_available()=False "
+                               "(ROCm/CUDA 휠 미설치). TheRock gfx1151 또는 Linux ROCm 필요.")
+        dev = torch.device("cuda")
+        dn = torch.cuda.get_device_name(0)
+        return ("cuda", dev, dn,
+                lambda: torch.cuda.empty_cache(),
+                lambda: torch.cuda.memory_allocated() / 1024**3)
+    # directml
+    import torch_directml
+    dev = torch_directml.device()
+    dn = torch_directml.device_name(0)
+    return ("directml", dev, dn, (lambda: None), (lambda: float("nan")))
 
 
 def load_config(path="./config/training_config.yaml"):
@@ -163,8 +190,12 @@ def main():
     ap.add_argument("--smoke", type=int, default=0,
                     help="스모크 모드: 지정 step 수만 돌리고 저장 없이 종료")
     ap.add_argument("--config", default="./config/training_config.yaml")
-    ap.add_argument("--dtype", choices=["fp16", "fp32"], default="fp16",
-                    help="가중치 dtype (DirectML ~31GB 천장 → 7B는 fp16 권장)")
+    ap.add_argument("--backend", choices=["auto", "directml", "cuda"], default="directml",
+                    help="연산 백엔드. directml=Windows기본. cuda=ROCm/HIP(empty_cache·bf16·env var 작동→고seq). auto=cuda있으면 cuda")
+    ap.add_argument("--dtype", choices=["fp16", "fp32", "bf16"], default="fp16",
+                    help="가중치 dtype. fp16=DirectML기본. bf16=ROCm/CUDA만(스케일 불필요·수치안정)")
+    ap.add_argument("--empty-cache-every", type=int, default=-1,
+                    help="N optim step마다 empty_cache(단편화 해소). -1=auto(cuda:1,directml:0), 0=끔. directml은 무효")
     ap.add_argument("--seq", type=int, default=0, help="max_seq_length 오버라이드(0=config)")
     ap.add_argument("--scale", type=float, default=128.0,
                     help="fp16 손실 스케일(언더플로 방지)")
@@ -195,13 +226,24 @@ def main():
             if m not in tm:
                 tm.append(m)
         config["lora"]["target_modules"] = tm
-    dtype = torch.float16 if args.dtype == "fp16" else torch.float32
-    use_scale = dtype == torch.float16
+    backend, device, dev_name, empty_cache, mem_used_gb = resolve_backend(args.backend)
+
+    # dtype 해석 + 백엔드 호환 가드
+    req_dtype = args.dtype
+    if backend == "directml" and req_dtype == "bf16":
+        log("⚠ DirectML은 bf16 미지원 → fp16으로 강제")
+        req_dtype = "fp16"
+    dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[req_dtype]
+    use_scale = dtype == torch.float16  # bf16/fp32는 손실 스케일 불필요
     SCALE = args.scale if use_scale else 1.0
 
-    device = torch_directml.device()
-    log(f"디바이스: DirectML ({torch_directml.device_name(0)}) | dtype={args.dtype} "
-        f"| loss_scale={SCALE if use_scale else 'off'}")
+    # empty_cache 주기: -1=auto(cuda:매 step, directml:끔)
+    ec_every = args.empty_cache_every
+    if ec_every < 0:
+        ec_every = 1 if backend == "cuda" else 0
+
+    log(f"디바이스: {backend} ({dev_name}) | dtype={req_dtype} "
+        f"| loss_scale={SCALE if use_scale else 'off'} | empty_cache_every={ec_every}")
     log(f"시작 RAM 가용 {ram_avail_gb():.1f}GB / CPU {psutil.cpu_percent()}%")
 
     tcfg = config["training"]
@@ -287,13 +329,17 @@ def main():
                 optim.zero_grad()
                 sched.step()
                 step += 1
+                # 단편화 해소: cuda(ROCm)에서 캐시 블록 반환 → 고seq 안정(directml은 no-op).
+                if ec_every and step % ec_every == 0:
+                    empty_cache()
                 dt_step = time.time() - t_step
                 step_times.append(dt_step)
                 # 윈도우 평균 손실(=실질 step 손실). 단일 마이크로배치가 아니라 accum 평균.
                 avg_loss = win_loss / accum
                 win_loss = 0.0
+                gpu_str = f" | GPU {mem_used_gb():.1f}GB" if backend == "cuda" else ""
                 log(f"step {step} | loss(avg{accum}) {avg_loss:.4f} | "
-                    f"{dt_step:.1f}s/step | RAM가용 {ram_avail_gb():.1f}GB | "
+                    f"{dt_step:.1f}s/step | RAM가용 {ram_avail_gb():.1f}GB{gpu_str} | "
                     f"CPU {psutil.cpu_percent()}%{' | SKIP(nan)' if bad else ''}")
                 t_step = time.time()
                 if smoke and step >= args.smoke:
