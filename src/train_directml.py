@@ -131,6 +131,9 @@ def stream_load_to_device(model_path, device, dtype):
             gc.collect()
             log(f"  {loaded}/{len(items)} tensors | RAM 가용 {ram_avail_gb():.1f}GB")
 
+    # tied embeddings(예: 1.5B는 lm_head=embed_tokens 공유) 재연결 — 적재 후 다시 tie해야
+    # meta로 남은 lm_head.weight가 로드된 embed 텐서로 채워짐(untied 7B/14B엔 무영향).
+    model.tie_weights()
     remaining = [n for n, p in model.named_parameters() if p.is_meta]
     if remaining:
         raise RuntimeError(f"적재 안 된 meta 텐서 {len(remaining)}개: {remaining[:5]}")
