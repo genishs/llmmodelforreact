@@ -158,6 +158,28 @@ def cmd_watch(args):
         time.sleep(2)
 
 
+def cmd_dump(args):
+    """릴레이 로그(jsonl)를 사람이 읽기 좋은 markdown transcript로 렌더.
+    사용자가 git에서 LAN 대화를 확인할 수 있도록 체크포인트마다 호출 → 커밋/푸시."""
+    msgs = _load()
+    out = args.out or os.path.join(os.path.dirname(LOG_PATH), "lan_chat_transcript.md")
+    lines = ["# LAN 직결 채팅 transcript (8060 ↔ 4060)",
+             "",
+             "> `scripts/lan_chat.py` LAN 릴레이로 주고받은 메시지 기록. 정본은 jsonl, 이건 가독용 렌더.",
+             f"> 총 {len(msgs)}개 메시지. 체크포인트마다 `dump` 후 커밋됨.",
+             ""]
+    last_day = None
+    for m in msgs:
+        day = time.strftime("%Y-%m-%d", time.localtime(m["ts"]))
+        if day != last_day:
+            lines.append(f"\n## {day}\n"); last_day = day
+        t = time.strftime("%H:%M:%S", time.localtime(m["ts"]))
+        lines.append(f"- **[{m['i']}] {t} {m['from']}** — {m['text']}")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"wrote {out} ({len(msgs)} msgs)")
+
+
 def cmd_wake(args):
     """피어(자기 아닌 발신자) 메시지가 오면 그것만 출력하고 즉시 종료(exit 0).
     백그라운드로 띄워두면 종료=에이전트 재호출 트리거 → 'origin/LAN push→즉시 깨우기'.
@@ -185,6 +207,7 @@ def main():
     s = sub.add_parser("send"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--from", required=True); s.add_argument("--text", required=True); s.set_defaults(func=cmd_send)
     s = sub.add_parser("poll"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--since", type=int, default=0); s.set_defaults(func=cmd_poll)
     s = sub.add_parser("watch"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--since", type=int, default=0); s.set_defaults(func=cmd_watch)
+    s = sub.add_parser("dump"); s.add_argument("--out", default=None); s.set_defaults(func=cmd_dump)
     s = sub.add_parser("wake"); s.add_argument("--host", required=True); s.add_argument("--port", type=int, default=8765); s.add_argument("--since", type=int, default=0); s.add_argument("--me", default="4060"); s.add_argument("--interval", type=float, default=2.0); s.add_argument("--timeout", type=float, default=0); s.set_defaults(func=cmd_wake)
     # Windows 콘솔 기본 cp949 → 한글/이모지 print 시 크래시. UTF-8로 고정(서버 로깅·클라 출력 공통).
     for stream in (sys.stdout, sys.stderr):
