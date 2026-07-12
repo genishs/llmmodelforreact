@@ -55,6 +55,24 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - **브릿지**: 코디네이션 레포 `genishs/claude-agent-team`, **이슈 #7** = ai_model 협업 스레드. 이 장비 별칭 **halo-ubuntu-pm**. shas-pm과 PM↔PM 방향성 마커 `🤖 **[halo-ubuntu-pm→shas-pm]**`로 통신. 워터마크 = `scratchpad/gh-watermark.txt`(코디네이션 레포 쪽).
 - **이번 세션 진행상황을 이슈 #7에 `halo-ubuntu-pm→shas-pm` 코멘트로 게시함**.
 
+## ✅ Gate B 통과 (2026-07-12 21:00, autonomous-operator 세션)
+- 커맨드: `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True ... train_directml.py --backend cuda --dtype bf16 --seq 512 --smoke 5 --train-file data/processed/react_train_r4.jsonl --out models/smoke-rocm` → `logs/smoke_7b_rocm.log`.
+- 결과: cuda 백엔드 인식(AMD Radeon Graphics/gfx1151), 7B 339텐서 GPU 스트리밍 적재(18.5s), LoRA(qkvo, r16) trainable 10.09M/0.13%, **5 optim step 전부 OOM/세그폴트 없이 완주**, loss 0.86~0.96(유한값). **7.8s/step, GPU peak 14.6GB**(32.7GB 한도 내 여유 큼). ⚠️ 코디네이터 지시대로 `HSA_OVERRIDE_GFX_VERSION`은 설정하지 않음(빈 값 설정 시 `cuda_available=False`가 되는 회귀 확인됨 — 절대 재도입 금지).
+- 판정: **Gate B PASS.** 재실행/디버깅 불필요했음(재launch 버전이 정상 동작).
+
+## ▶ 7B bf16 qkvo+MLP seq512 본런 (task 2, 2026-07-12 21:00~ 진행중)
+- 커맨드: `train_directml.py --backend cuda --dtype bf16 --seq 512 --lora-mlp --train-file data/processed/react_train_r4.jsonl --out models/qwen-react-lora-7b-rocm` (config 기본 epochs=3, r=16→lora-mlp로 gate/up/down_proj 추가 → **trainable 40.37M/0.53%**). 로그: `logs/train_7b_rocm.log`.
+- 진행 중 실측(step 1~23): **step시간 10.1→11.5s로 완만히 수렴(단편화 미미), GPU 14.9GB 고정**(smoke 대비 MLP타깃 추가로 +0.3GB뿐, 32.7GB 한도 대비 여유 충분). loss 0.68~0.99 범위 노이즈(정상, 소배치).
+- 총 111 optim step(3 epoch × ~37) 예상 완주 시간 ≈ 20~25분. 완료 시 어댑터를 `models/qwen-react-lora-7b-rocm`에 저장하고 이 문서에 최종 loss/wall-clock을 追記 후 타겟 `git add`로 커밋(전체 add 금지 — 레포 CRLF 노이즈).
+
+## 🔍 32B feasibility spike — bitsandbytes ROCm 4bit 빌드 (task 3, 2026-07-12) — **NO-GO (시스템 툴체인 부재)**
+- 시도: `git clone -b rocm_enabled_multi_backend https://github.com/ROCm/bitsandbytes.git` (성공) → `cmake -DCOMPUTE_BACKEND=hip -DBNB_ROCM_ARCH=gfx1151 -G Ninja` 구성.
+- **venv 자체 ROCm SDK(`_rocm_sdk_core`, pip로 옴)가 hipcc/amdclang/amdclang++까지 완비** — HIP 툴체인 자체는 문제 없음(이전 세션 답신29의 "alpha라 빌드이슈 가능" 우려는 HIP 쪽에선 기우였음).
+- **실제 블로커: 시스템에 C++ 개발 툴체인이 전혀 없음.** `gcc`/`g++`/`clang`/`cc`/`c++` 전부 미설치(런타임 메타패키지 `gcc-*-base`만 있고 컴파일러 바이너리 없음), `libstdc++.so`(비버전 dev심볼릭링크)·`libstdc++-dev` 헤더 없음(`.so.6` 런타임만 존재), `cmake`/`ninja`도 시스템에 없어 **pip로 설치**(`uv pip install cmake ninja` — 성공, 이건 sudo 불필요라 자율수행함). ROCm SDK의 clang++는 링크 시 `-lstdc++`/`-lgcc_s`를 시스템 경로에서 찾는데 존재하지 않아 **컴파일러 자체 테스트(`CMakeTestCXXCompiler`)에서 실패**.
+- 해소책 = `sudo apt install build-essential`(또는 동등: g++ + libstdc++-dev) — **sudo 필요 → 위임범위 밖, 자율 진행 중단하고 사용자 확인 대기열에 등록.**
+- 노력 배분: 위 진단(클론→cmake 2회 재시도→컴파일러 실패 원인 특정)까지만 하고 중단 — "합리적 노력"에 맞게 헤더 없는 libc++ 강제사용 등 추가 우회는 시도하지 않음(효과 불확실 대비 시간 대비 낮음).
+- **결론: 32B는 지금 당장은 4bit 경로 막힘.** 대안 ①(권장) 사용자가 `sudo apt install build-essential` 1회 설치 → 재시도(성공 가능성 높음, HIP 툴체인은 이미 검증됨). 대안② 14B bf16(메모리 확장 후) 경로로 사다리 순서를 바꿔 32B는 뒤로 미룸.
+
 ## 주의 / 리스크
 - torch 백그라운드 설치가 하니스 임시셸에서 반복 중단(0바이트 로그) → 다음엔 **사용자 실제(지속) 터미널**에서 실행. pip 캐시는 ext4(`~/.cache/pip`)에 남아 재실행 시 진행분 재활용.
 - **Ubuntu 26.04**(계획서 원안은 24.04) — TheRock 휠 glibc/커널 호환 여부는 **Gate A가 트립와이어**. 실패 시 휠 변형(다른 날짜 빌드) 재시도.
