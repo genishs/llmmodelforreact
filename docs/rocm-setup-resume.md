@@ -6,7 +6,12 @@
 > 별칭 확정: 이 Linux 개발팀 = **halo-ubuntu-pm** (Windows측 `halo-pm`, 상대 장비 `shas-pm`과 구분).
 
 ## 상태 요약 (한 줄)
-Ubuntu 26.04 + ROCm(gfx1151) 전환 착수 → **Python 3.12 venv 완료**, TheRock torch 설치 미완(재개 필요), Gate A(GPU 검증) 이후 단계 대기.
+Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A 통과 ✅**(bf16 OK·세그폴트 없음). 다음 = ML 의존성 → 모델 다운로드 → smoke.
+
+## ✅✅ Gate A 통과 (2026-07-12, 핵심 관문 돌파)
+- torch **2.10.0+rocm7.13.0a20260513** (cp312), `cuda_available=True`, device=AMD Radeon Graphics(gfx1151).
+- fp32/**bf16 matmul 작동**(DirectML 불가였음), `empty_cache` OK, **세그폴트 없음**(ROCm #5853 회피 확인). → Linux+ROCm 경로 유효성 입증.
+- ⚠️ **중요 발견**: `torch.cuda.mem_get_info` total=**32.7GB** — 물리 60GB 전체가 아님(**GTT 기본 한도 ≈ RAM의 50%**). **14B bf16(~32GB)는 경계선**(OOM 위험) → GTT 확대 필요(부팅 `amdgpu.gttsize`/`ttm.pages_limit` 커널파라미터 또는 BIOS VGM). **32B 4bit(~24GB)는 32GB 안에 안착.** ← 메모리 매트릭스 재조정 필요, 다음 세션 우선.
 
 ## ✅ 완료 (재부팅해도 보존됨 — venv=ext4, 레포=NTFS, uv=~/.local)
 - **OS**: Ubuntu 26.04 LTS, kernel 7.0, gfx1151(Radeon 8060S). **통합 RAM 60GB 전체 가시** (Windows 48/15.6 정적분할 탈출).
