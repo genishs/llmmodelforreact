@@ -12,6 +12,12 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - torch **2.10.0+rocm7.13.0a20260513** (cp312), `cuda_available=True`, device=AMD Radeon Graphics(gfx1151).
 - fp32/**bf16 matmul 작동**(DirectML 불가였음), `empty_cache` OK, **세그폴트 없음**(ROCm #5853 회피 확인). → Linux+ROCm 경로 유효성 입증.
 - ⚠️ **중요 발견**: `torch.cuda.mem_get_info` total=**32.7GB** — 물리 60GB 전체가 아님(**GTT 기본 한도 ≈ RAM의 50%**). **14B bf16(~32GB)는 경계선**(OOM 위험) → GTT 확대 필요(부팅 `amdgpu.gttsize`/`ttm.pages_limit` 커널파라미터 또는 BIOS VGM). **32B 4bit(~24GB)는 32GB 안에 안착.** ← 메모리 매트릭스 재조정 필요, 다음 세션 우선.
+  - **원인 규명(2026-07-12)**: GPU 캡 = **TTM `pages_limit` = 7,987,871 pages ≈ 32.5GB = RAM 64GB의 50%**(커널 기본). `-rw-r--r--`(root 런타임 쓰기 가능), ttm은 모듈 → **재부팅 없이 sudo로 확대 가능**:
+    ```bash
+    echo 13107200 | sudo tee /sys/module/ttm/parameters/pages_limit          # ~50GB GTT 즉시
+    echo 'options ttm pages_limit=13107200' | sudo tee /etc/modprobe.d/ttm-gtt.conf  # 재부팅 후에도 유지
+    ```
+    (13107200 pages = 50GB, 호스트에 ~14GB 남김. 7B/32B-4bit는 확대 불필요, **14B bf16만 필요**.)
 
 ## ✅ 완료 (재부팅해도 보존됨 — venv=ext4, 레포=NTFS, uv=~/.local)
 - **OS**: Ubuntu 26.04 LTS, kernel 7.0, gfx1151(Radeon 8060S). **통합 RAM 60GB 전체 가시** (Windows 48/15.6 정적분할 탈출).
