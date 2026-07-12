@@ -101,3 +101,13 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - 어댑터: `models/qwen-react-lora-14b-rocm`(672텐서, **263MB**, 로컬보관). **첫 ROCm 14B 어댑터.**
 - ⚠️ **미실행**: 14B held-out 채점 / 32B smoke·본런 — 14B 완료(00:23) 후 파이프라인이 stale-monitor 정체로 진행 안 됨(~5h 유휴). 
 - **다음 세션 즉시 가능(전부 준비됨)**: ①14B heldout7 채점 ②bnb-ROCm nf4 numeric test ③32B smoke(--load-4bit, nf4 19GB 적재)→32B 본런. bnb 빌드·32B 다운로드·로더코드 모두 커밋됨.
+
+## ✅ 14B 정성 확인 (B, 2026-07-13 아침, qa-tester) — PASS
+- ho-select·ho-gallery 생성 → 둘 다 **clean·valid React/TS, EOS 정상종료, im_start/FIM 누수 없음**. ho-select는 원본 onChange 버그(항상 같은값 재설정)까지 자발 수정. val_loss 0.4812와 일관 = 학습 제대로 됨 정성 확증.
+- **처리량 ~4.3 tok/s**(14B bf16 ROCm) → 정식채점 시간예산: 1536토큰 ~6분, ho-admin-medit 4096토큰 ~15분(느림).
+- base는 bf16 무양자(`from_pretrained torch_dtype=bf16 device_map=auto`)+`PeftModel`로 로드(어댑터 `models/qwen-react-lora-14b-rocm`). egov 원본은 sibling 체크아웃 `twinspace_platform/egovGeoportal/src/components/`.
+
+## ⏭️ C — 다음 세션 정식 채점 (큐잉)
+1. **node/tsc 설치**(현재 미설치): `sudo apt install nodejs npm` 또는 nvm → `tsc_eval`에서 `npm install`.
+2. `eval_hard_tsc.py --adapter models/qwen-react-lora-14b-rocm --heldout --max-new 4096`(heldout7, base bf16) → `scores-8060.jsonl` 등록 → 62.9% 베이스·8060 r5mlp(80%)·4060(95%) 대조.
+3. 이어서 32B: nf4 numeric test → smoke(실 step시간 측정) → 본런.
