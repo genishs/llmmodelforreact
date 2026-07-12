@@ -141,13 +141,37 @@ def stream_load_to_device(model_path, device, dtype):
     return model
 
 
-def build(model_path, device, config, dtype, grad_ckpt):
-    log(f"모델 로드: {model_path} (dtype={dtype})")
+def load_prequantized_4bit(model_path, compute_dtype):
+    """사전양자화(bnb nf4) 체크포인트 로드 — 32B 4bit용.
+
+    커스텀 stream_load는 텐서를 fp16/bf16으로 변환해 채우므로 nf4(uint8 packed +
+    quant_state)를 못 읽는다. 대신 from_pretrained가 config.json의 quantization_config를
+    자동 인식해 Linear4bit 모듈을 만들고 quant_state까지 적재한다(bnb-ROCm 필요).
+    device_map={'':0}으로 단일 GPU에 직접 올린다.
+    """
+    log(f"  사전양자화(4bit) 로드: from_pretrained device_map=cuda:0, compute_dtype={compute_dtype}")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        device_map={"": 0},
+        dtype=compute_dtype,
+        trust_remote_code=True,
+    )
+    return model
+
+
+def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False):
+    log(f"모델 로드: {model_path} (dtype={dtype}{', 4bit-prequant' if load_4bit else ''})")
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    model = stream_load_to_device(model_path, device, dtype)
+    if load_4bit:
+        model = load_prequantized_4bit(model_path, dtype)
+        from peft import prepare_model_for_kbit_training
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=grad_ckpt)
+    else:
+        model = stream_load_to_device(model_path, device, dtype)
 
     lc = config["lora"]
     lora_config = LoraConfig(
@@ -157,12 +181,14 @@ def build(model_path, device, config, dtype, grad_ckpt):
         lora_dropout=lc["lora_dropout"], bias=lc["bias"],
     )
     model = get_peft_model(model, lora_config)
-    model = model.to(device)  # LoRA 신규 파라미터를 디바이스로
+    if not load_4bit:
+        model = model.to(device)  # LoRA 신규 파라미터를 디바이스로 (4bit는 이미 device_map으로 GPU에 있고 .to() 불가)
     model.config.use_cache = False
 
     # gradient checkpointing: DirectML에서는 재계산이 캐싱 할당자에 버퍼를 더 쌓아
     # 오히려 VRAM 증가를 가속 → 기본 비활성.
-    if grad_ckpt:
+    # 4bit 경로는 prepare_model_for_kbit_training이 이미 grad-ckpt를 처리하므로 재적용 안 함.
+    if grad_ckpt and not load_4bit:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
 
@@ -216,6 +242,9 @@ def main():
     ap.add_argument("--momentum", type=float, default=0.9, help="SGD 모멘텀(0=상태 0, 최대 절감)")
     ap.add_argument("--no-eos", action="store_true",
                     help="EOS 위생 끔(seq512 pre-EOS 레시피 재현 — R3 회귀 회피)")
+    ap.add_argument("--load-4bit", action="store_true",
+                    help="사전양자화(bnb nf4) 체크포인트 로드(32B용). from_pretrained가 config의 "
+                         "quantization_config 자동인식→Linear4bit. bnb-ROCm 필요. dtype=bf16(compute)")
     args = ap.parse_args()
 
     config = load_config(args.config)
@@ -253,7 +282,7 @@ def main():
     dcfg = config["data"]
     model_path = args.base if args.base else config["model"]["base_model"]
 
-    model, tok = build(model_path, device, config, dtype, args.grad_ckpt)
+    model, tok = build(model_path, device, config, dtype, args.grad_ckpt, load_4bit=args.load_4bit)
 
     bs = tcfg["per_device_train_batch_size"]
     accum = tcfg["gradient_accumulation_steps"]
