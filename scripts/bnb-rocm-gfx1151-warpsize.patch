@@ -1,0 +1,15 @@
+diff --git a/csrc/kernels.hip b/csrc/kernels.hip
+index 3836858..130c081 100644
+--- a/csrc/kernels.hip
++++ b/csrc/kernels.hip
+@@ -2855,6 +2855,10 @@ template <int THREADS, int ITEMS_PER_THREAD, int TILE_ROWS, int TILE_COLS, int T
+ #define SMEM_SIZE 8*256
+ #ifdef __AMDGCN_WAVEFRONT_SIZE
+   #define WARP_SIZE __AMDGCN_WAVEFRONT_SIZE
++#elif defined(__GFX11__) || defined(__GFX12__)
++  // RDNA3/3.5/4 (gfx11xx/gfx12xx incl. gfx1151) are wave32; the legacy
++  // __AMDGCN_WAVEFRONT_SIZE macro is undefined on ROCm 7.13 clang, so detect arch.
++  #define WARP_SIZE 32
+ #else
+   #define WARP_SIZE 64
+ #endif

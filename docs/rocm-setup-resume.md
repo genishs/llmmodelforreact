@@ -67,13 +67,28 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - **어댑터 저장 확인**: `models/qwen-react-lora-7b-rocm/` — `adapter_model.safetensors` **161MB(392 텐서, CPU/fp32)** + `adapter_config.json` + tokenizer 3종. **★ROCm 상에서 end-to-end LoRA 품질 파이프라인 첫 검증 완료** — 채점 가능한 7B 어댑터 확보.
 - **다음**: 이 어댑터를 heldout7-mn4096 캐논으로 채점(qa-tester) → 기존 8060 seq512(81.8%)/r5mlp(80%)·4060 r4mlp(95%)와 비교. bf16+MLP+seq512 조합의 ROCm 실효 확인.
 
-## 🔍 32B feasibility spike — bitsandbytes ROCm 4bit 빌드 (task 3, 2026-07-12) — **NO-GO (시스템 툴체인 부재)**
-- 시도: `git clone -b rocm_enabled_multi_backend https://github.com/ROCm/bitsandbytes.git` (성공) → `cmake -DCOMPUTE_BACKEND=hip -DBNB_ROCM_ARCH=gfx1151 -G Ninja` 구성.
-- **venv 자체 ROCm SDK(`_rocm_sdk_core`, pip로 옴)가 hipcc/amdclang/amdclang++까지 완비** — HIP 툴체인 자체는 문제 없음(이전 세션 답신29의 "alpha라 빌드이슈 가능" 우려는 HIP 쪽에선 기우였음).
-- **실제 블로커: 시스템에 C++ 개발 툴체인이 전혀 없음.** `gcc`/`g++`/`clang`/`cc`/`c++` 전부 미설치(런타임 메타패키지 `gcc-*-base`만 있고 컴파일러 바이너리 없음), `libstdc++.so`(비버전 dev심볼릭링크)·`libstdc++-dev` 헤더 없음(`.so.6` 런타임만 존재), `cmake`/`ninja`도 시스템에 없어 **pip로 설치**(`uv pip install cmake ninja` — 성공, 이건 sudo 불필요라 자율수행함). ROCm SDK의 clang++는 링크 시 `-lstdc++`/`-lgcc_s`를 시스템 경로에서 찾는데 존재하지 않아 **컴파일러 자체 테스트(`CMakeTestCXXCompiler`)에서 실패**.
-- 해소책 = `sudo apt install build-essential`(또는 동등: g++ + libstdc++-dev) — **sudo 필요 → 위임범위 밖, 자율 진행 중단하고 사용자 확인 대기열에 등록.**
-- 노력 배분: 위 진단(클론→cmake 2회 재시도→컴파일러 실패 원인 특정)까지만 하고 중단 — "합리적 노력"에 맞게 헤더 없는 libc++ 강제사용 등 추가 우회는 시도하지 않음(효과 불확실 대비 시간 대비 낮음).
-- **결론: 32B는 지금 당장은 4bit 경로 막힘.** 대안 ①(권장) 사용자가 `sudo apt install build-essential` 1회 설치 → 재시도(성공 가능성 높음, HIP 툴체인은 이미 검증됨). 대안② 14B bf16(메모리 확장 후) 경로로 사다리 순서를 바꿔 32B는 뒤로 미룸.
+## ✅✅ 메모리 확장 완료 (2026-07-12 재부팅, 사용자 GRUB) — 60.1GB
+- 재부팅 후 `torch.cuda.mem_get_info` total = **60.1GB**(구 32.7GB), amdgpu GTT total 60.1GB, 커널 cmdline `ttm.pages_limit=14680064`. **GRUB 부트파라미터 방식 성공.** `build-essential`도 설치됨(gcc/g++ 15.2). → 14B bf16 및 32B 4bit 모두 실행 가능.
+
+## ✅✅ 14B bf16 qkvo+MLP seq1024 본런 (task, 2026-07-12 22:13~ 진행중) — ★>32GB 증명 확보
+- 다운로드: `scripts/dl_14b_local.py`로 `models/base/qwen2.5-coder-14b` 직접 적재(6샤드 ~29GB, 20.9분, 1회 완주).
+- **★>32GB 증명(핵심)**: 첫 실행(coordinator 지정 커맨드 그대로, `--grad-ckpt` 없음)이 loss(cross_entropy) 단계에서 OOM — **그 OOM 트레이스가 곧 증명**: "GPU 0 total capacity **56.00GiB**, **54.91GiB allocated by PyTorch**". 14B bf16 학습이 **54.9GB 할당** = 구 32.7GB 천장이면 절대 불가. **메모리 확장 실효 결정적 입증.**
+- OOM 원인/수정: 계획서(이 문서 line 48/51)가 14B엔 gradient checkpointing ON을 명시하나 지정 커맨드에 `--grad-ckpt` 누락(스크립트가 이 플래그로 게이팅). **`--grad-ckpt` 추가해 재실행**(가역적 학습실행 수정, 위임범위 내).
+- **재실행 정상 학습중**: `--seq 1024 --lora-mlp --grad-ckpt`, trainable 68.8M/0.46%. **~63~67s/step, GPU 28.7GB 안정**(=14.8B bf16 가중치 ~28GB + 소량 옵티마이저; grad-ckpt로 활성값 최소화, 손실계산 순간피크는 더 높아 run-1을 OOM시킴). loss ~0.81~0.91. 111 optim step → ETA ~2h + eval.
+- 완료 시: 어댑터 `models/qwen-react-lora-14b-rocm` 저장 → 최종 loss/wall-clock/GPU peak 追記 → 타겟 커밋.
+
+## ✅ 32B feasibility spike — bitsandbytes ROCm 4bit 빌드 (task 3) — **빌드+임포트 성공(GO), 수치검증 14B후 대기**
+- **1차(재부팅 전) 블로커=시스템 C++ 툴체인 부재**(gcc/g++/libstdc++-dev 없음). 사용자 `build-essential` 설치로 해소.
+- **2차 블로커=pip ROCm SDK(`_rocm_sdk_core`)가 런타임전용** — hipcc/libs/헤더는 있으나 **CMake 패키지(`hip-lang-config.cmake`) 없음** → bnb의 `enable_language(HIP)` 실패. **해소: `uv pip install rocm-sdk-devel==7.13.0a20260513`(TheRock gfx1151 인덱스, core와 정확히 동일버전) + `rocm-sdk init`**(9.3GB devel tar 확장 → `_rocm_sdk_devel/lib/cmake/hip*` 생성).
+- **3차 블로커=gfx1151 wavefront 크기(실제 코드버그)**: `hipcub::WarpReduce<float,64>`가 gfx1151(wave32)에서 static_assert 실패. 원인=ROCm 7.13 clang에 legacy `__AMDGCN_WAVEFRONT_SIZE` 매크로 미정의 → WARP_SIZE가 잘못된 64로 폴백. **패치: `csrc/kernels.hip`의 WARP_SIZE 가드에 `#elif defined(__GFX11__)||defined(__GFX12__) → 32` 브랜치 추가**(RDNA3/3.5/4는 wave32). 패치 파일: `scripts/bnb-rocm-gfx1151-warpsize.patch`.
+- **빌드 성공**: `cmake -DCOMPUTE_BACKEND=hip -DBNB_ROCM_ARCH=gfx1151 -DCMAKE_HIP_COMPILER=$DEVEL/lib/llvm/bin/amdclang++ -DCMAKE_PREFIX_PATH=$DEVEL` (DEVEL=`_rocm_sdk_devel`) → `libbitsandbytes_rocm713.so` 링크 완료 → `uv pip install -e . --no-build-isolation`.
+- **검증(binding레벨)**: `import bitsandbytes` OK(0.43.3.dev), lib버전 **713**(우리가 빌드한 .so) CDLL 로드, `Linear4bit`/`Params4bit(nf4)` 존재·CPU 구성 OK. **남은 것=GPU nf4 matmul non-NaN 수치검증** — 단일 GPU라 14B 학습과 겹치면 OOM 위험 → **14B 완료 후 32B smoke 직전에 실행 예정**(coordinator의 GPU 비중첩 규칙 준수).
+- **빌드 재현 레시피 요약**: ①`build-essential`(sudo, 완료) ②`rocm-sdk-devel==<core버전>` + `rocm-sdk init` ③kernels.hip warp-size 패치 ④위 cmake 인자 ⑤editable install. **다음 장비/재설치 시 이 5단계.**
+
+## 32B 사전양자화 획득 (진행중)
+- **fp16 64GB 대신 사전양자화 nf4본 채택**: `unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit`(~19.2GB, `quant_method=bitsandbytes`, load_in_4bit) → 다운로드 3배 절감 + load-time fp16→4bit RAM 스파이크 회피. `scripts/dl_32b_bnb4.py`로 `models/base/qwen2.5-coder-32b-bnb-4bit`에 다운로드중(14B 학습과 병렬, 네트워크 vs GPU 무경합).
+- **주의**: 이 체크포인트 로드/학습엔 **위 bnb-ROCm이 필수**(quant_method=bitsandbytes). 그래서 bnb 수치검증이 32B의 진짜 게이트.
+- 다음(GPU 순차): 14B 완료 → bnb nf4 수치검증 → 32B 4bit 로드+2~5step smoke(host RAM peak·GPU GB·step time) → 클린이면 32B 4bit qkvo+MLP 본런.
 
 ## 주의 / 리스크
 - torch 백그라운드 설치가 하니스 임시셸에서 반복 중단(0바이트 로그) → 다음엔 **사용자 실제(지속) 터미널**에서 실행. pip 캐시는 ext4(`~/.cache/pip`)에 남아 재실행 시 진행분 재활용.
