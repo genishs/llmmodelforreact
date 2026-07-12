@@ -3,6 +3,7 @@
 > 작성 2026-06-30 (8060). 목적: DirectML 39GB 캡·단편화·fp16강제 한계를 넘어 **gfx1151(Radeon 8060S)
 > 네이티브 ROCm**으로 14B 고seq·20B+ 4bit·통합메모리 풀활용. **사용자 업무 중이라 지금은 정보만 수집, 설치 보류.**
 > 코드는 이미 ROCm 대비 완료(`train_directml.py --backend cuda`, `docs/rocm-backend-setup.md`).
+> **📎 디스크 축소는 사용자 직접 실행 → 전용 런북 `docs/disk-prep-runbook.md` 정본.**
 
 ## ★ 핵심 발견 (웹 리서치, 2026-06-30)
 - **Linux ROCm에서 PyTorch가 ~103GB 주소공간 인식**(96GB GPU 할당가능, 통합메모리). DirectML은 전용 39GB 하드캡 →
@@ -16,10 +17,19 @@
 
 ## 설치 절차 (재부팅 가능 시점에)
 
-### 0단계: 디스크 준비 (Windows에서, 사용자 확인 후)
-- **대상 = Disk 1 (GIGABYTE 931.5GB, D: "새 볼륨", 여유 187GB)**. C:(Disk 0 Samsung, Windows)는 **절대 미접촉**.
-- D:를 shrink해 리눅스용 미할당 ~150GB 확보(`Resize-Partition`) → Ubuntu 설치 시 그 공간에 ext4+swap 생성.
-- ⚠️ **디스크 작업은 자동승인 훅이 안 막음** → 매 단계 사용자 명시 확인. shrink 전 D: 중요데이터 백업.
+### 0단계: 디스크 준비 (Windows에서, 사용자가 관리자 권한으로 직접)
+> ⚠️ **2026-07-12 실측으로 정정**: 아래 표는 현재 디스크 현실이다. 예전 "D: 새 볼륨/여유 187GB" 서술은 **낡음**.
+> **상세 절차·백업 체크리스트·명령은 신규 `docs/disk-prep-runbook.md`가 정본.** 여기선 요약만.
+
+- **대상 = Disk 1 (GIGABYTE GP-AG41TB 931.5GB) = D: "새 볼륨"**. C:(Disk 0 Samsung 953.9GB, Windows)는 **절대 미접촉**.
+- **D:는 빈 볼륨이 아니라 사용자 활성 데이터 드라이브**다. Windows 셸 폴더가 D:로 이전됨 (실측):
+  Saved Games **234GB**, Downloads 97GB, Desktop 69GB, Documents 28GB, SteamLibrary 27GB, Videos 22GB, Pictures 20GB.
+  **현재 여유 = 421GB** (931.5GB 중).
+- **목표 축소량 = 150~200GB** (14B fp16 스냅샷 29GB + 20B/32B 4bit 스냅샷·복수 어댑터·데이터셋·ROCm 툴체인·swap 고려).
+  Ubuntu 설치 시 이 미할당 공간에 ext4(root) + swap 생성.
+- ⚠️ **이 자동화(Claude) 세션은 비관리자** → `Get-PartitionSupportedSize`/`Resize-Partition`이 CIM 접근 거부로 실패.
+  **축소는 사용자가 관리자 PowerShell 또는 diskmgmt.msc로 직접** 수행해야 한다. 디스크 작업은 자동승인 훅 범위 밖.
+- ⚠️ 이동불가 파일(페이지파일·MFT·복원지점 등)이 축소 상한을 421GB보다 낮출 수 있음 → **축소 전 조각모음 + `Get-PartitionSupportedSize`로 실측 필수** (런북 참조).
 
 ### 1단계: Ubuntu 24.04.3 LTS 설치 (사용자가 직접 — 부팅전 GUI라 Claude 불가)
 - USB로 Ubuntu 24.04.3 부팅 → 미할당 공간에 설치(C: Windows 유지, 듀얼부팅 GRUB).
