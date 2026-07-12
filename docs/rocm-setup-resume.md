@@ -94,3 +94,10 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - torch 백그라운드 설치가 하니스 임시셸에서 반복 중단(0바이트 로그) → 다음엔 **사용자 실제(지속) 터미널**에서 실행. pip 캐시는 ext4(`~/.cache/pip`)에 남아 재실행 시 진행분 재활용.
 - **Ubuntu 26.04**(계획서 원안은 24.04) — TheRock 휠 glibc/커널 호환 여부는 **Gate A가 트립와이어**. 실패 시 휠 변형(다른 날짜 빌드) 재시도.
 - 레포가 **NTFS**라 git에 CRLF 대량 diff 노이즈 존재 → **신규 파일만 타겟 커밋**(전체 `git add` 금지).
+
+## ✅✅ 14B bf16 qkvo+MLP seq1024 본런 완료 (2026-07-13 00:23)
+- **112 steps, 3 epoch, 총 7775.6s(~2h10m), 평균 68.6s/step, GPU 28.7GB 안정**(grad-ckpt로 활성값 최소화; run-1은 grad-ckpt 없이 54.9GB 할당 OOM=★>32GB 실증).
+- **val_loss: 0.6078 → 0.4895 → 0.4812**(단조감소). trainable 68.8M(qkvo+MLP r16).
+- 어댑터: `models/qwen-react-lora-14b-rocm`(672텐서, **263MB**, 로컬보관). **첫 ROCm 14B 어댑터.**
+- ⚠️ **미실행**: 14B held-out 채점 / 32B smoke·본런 — 14B 완료(00:23) 후 파이프라인이 stale-monitor 정체로 진행 안 됨(~5h 유휴). 
+- **다음 세션 즉시 가능(전부 준비됨)**: ①14B heldout7 채점 ②bnb-ROCm nf4 numeric test ③32B smoke(--load-4bit, nf4 19GB 적재)→32B 본런. bnb 빌드·32B 다운로드·로더코드 모두 커밋됨.
