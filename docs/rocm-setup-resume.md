@@ -60,10 +60,12 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - 결과: cuda 백엔드 인식(AMD Radeon Graphics/gfx1151), 7B 339텐서 GPU 스트리밍 적재(18.5s), LoRA(qkvo, r16) trainable 10.09M/0.13%, **5 optim step 전부 OOM/세그폴트 없이 완주**, loss 0.86~0.96(유한값). **7.8s/step, GPU peak 14.6GB**(32.7GB 한도 내 여유 큼). ⚠️ 코디네이터 지시대로 `HSA_OVERRIDE_GFX_VERSION`은 설정하지 않음(빈 값 설정 시 `cuda_available=False`가 되는 회귀 확인됨 — 절대 재도입 금지).
 - 판정: **Gate B PASS.** 재실행/디버깅 불필요했음(재launch 버전이 정상 동작).
 
-## ▶ 7B bf16 qkvo+MLP seq512 본런 (task 2, 2026-07-12 21:00~ 진행중)
+## ✅ 7B bf16 qkvo+MLP seq512 본런 완료 (task 2, 2026-07-12 21:00~21:22, DONE)
 - 커맨드: `train_directml.py --backend cuda --dtype bf16 --seq 512 --lora-mlp --train-file data/processed/react_train_r4.jsonl --out models/qwen-react-lora-7b-rocm` (config 기본 epochs=3, r=16→lora-mlp로 gate/up/down_proj 추가 → **trainable 40.37M/0.53%**). 로그: `logs/train_7b_rocm.log`.
-- 진행 중 실측(step 1~23): **step시간 10.1→11.5s로 완만히 수렴(단편화 미미), GPU 14.9GB 고정**(smoke 대비 MLP타깃 추가로 +0.3GB뿐, 32.7GB 한도 대비 여유 충분). loss 0.68~0.99 범위 노이즈(정상, 소배치).
-- 총 111 optim step(3 epoch × ~37) 예상 완주 시간 ≈ 20~25분. 완료 시 어댑터를 `models/qwen-react-lora-7b-rocm`에 저장하고 이 문서에 최종 loss/wall-clock을 追記 후 타겟 `git add`로 커밋(전체 add 금지 — 레포 CRLF 노이즈).
+- **최종 결과**: **112 optim step, 총 1340.1s(22.3분), 평균 11.8s/step, GPU peak 14.9GB 고정**(32.7GB 한도 대비 여유 충분, MLP타깃 추가로 smoke 대비 +0.3GB뿐). 단편화 없음(step시간 10.1→11.8s 완만 수렴 후 안정).
+- **loss 곡선**: epoch1 val_loss **0.5703** → epoch2 **0.5026** → epoch3 **0.4961**(단조 감소, train loss step1 ~0.92 → 후반 ~0.4대). 3 epoch에서 완만 포화 조짐(4060 CUDA-QLoRA eval_loss 0.4709과 유사 대역 — 단 손실계산 방식 달라 직접비교 주의).
+- **어댑터 저장 확인**: `models/qwen-react-lora-7b-rocm/` — `adapter_model.safetensors` **161MB(392 텐서, CPU/fp32)** + `adapter_config.json` + tokenizer 3종. **★ROCm 상에서 end-to-end LoRA 품질 파이프라인 첫 검증 완료** — 채점 가능한 7B 어댑터 확보.
+- **다음**: 이 어댑터를 heldout7-mn4096 캐논으로 채점(qa-tester) → 기존 8060 seq512(81.8%)/r5mlp(80%)·4060 r4mlp(95%)와 비교. bf16+MLP+seq512 조합의 ROCm 실효 확인.
 
 ## 🔍 32B feasibility spike — bitsandbytes ROCm 4bit 빌드 (task 3, 2026-07-12) — **NO-GO (시스템 툴체인 부재)**
 - 시도: `git clone -b rocm_enabled_multi_backend https://github.com/ROCm/bitsandbytes.git` (성공) → `cmake -DCOMPUTE_BACKEND=hip -DBNB_ROCM_ARCH=gfx1151 -G Ninja` 구성.
