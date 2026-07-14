@@ -6,7 +6,20 @@
 > 별칭 확정: 이 Linux 개발팀 = **halo-ubuntu-pm** (Windows측 `halo-pm`, 상대 장비 `shas-pm`과 구분).
 
 ## 상태 요약 (한 줄)
-Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A 통과 ✅**(bf16 OK·세그폴트 없음). 다음 = ML 의존성 → 모델 다운로드 → smoke.
+Ubuntu 26.04 + ROCm(gfx1151). **bf16 트랙 견고**(7B/14B 본런 완료, 14B=60.0% banked). **32B 4bit QLoRA 학습은 이 gfx1151/bnb-ROCm 빌드에서 비실용 결론**(2026-07-15): 기본 SDPA backward=GPU 웨지, eager backward=8~21분에도 1 step 미완(unusably slow). 70B 미시도. **최고 banked = 14B bf16 60.0%.**
+
+## ⛔⛔ 32B 4bit QLoRA 최종 판정 = 비실용 (2026-07-15 00:30, autonomous-operator) — ★★핵심 결론
+재부팅으로 GPU 복구(cuda True, GTT 60.1GB) 후 backward 웨지 픽스(`--attn-eager`)를 실측 검증. **두 변형 모두 backward 1 step 완주 실패**:
+| # | 설정 | 결과 | GPU |
+|---|---|---|---|
+| try2 | `--attn-eager --grad-ckpt --seq512 --smoke2` | **21분+ GPU 100%인데 optim step 0개**(log가 `optim_steps≈2`에서 정지) | **웨지 안 됨**(cuda True 유지) |
+| try3 | `--attn-eager` **NO grad-ckpt** `--empty-cache-every 0 --seq512 --smoke2`, `timeout 480` | **EXIT 124**(8분 하드타임아웃)=step 0개 | **웨지 안 됨** |
+- **정확한 판정**: (a) **기본(실험적 SDPA) 어텐션** → 4bit backward가 `HIP unspecified launch failure`로 **GPU 물리 웨지**(재부팅 필요, 어젯밤 확인). (b) **eager(math SDP) 어텐션** → backward가 **웨지는 안 시키나**(GPU 건강 유지) **1 optim step도 8~21분에 못 끝냄**(grad-ckpt 유무 무관) = **실사용 불가**(실런은 며칠 소요). 
+- **원인 좁힘**: eager math-SDP는 O(seq²) 어텐션 행렬을 fp32로 materialize → 32B×64layer×seq512에서 bnb Linear4bit backward(dequant 매 op)와 겹쳐 microbatch당 수분. bf16 비4bit 14B(seq1024)는 68s/step 정상 → **병목은 4bit dequant×eager 조합**. 로그: `logs/smoke_32b_try2.log`, `logs/smoke_32b_try3.log`.
+- **결론(정직)**: **32B/70B 4bit QLoRA 학습 트랙은 이 gfx1151+bnb-ROCm(0.43.3.dev+wave32패치) 빌드에서 비실용.** 필요 시 = **다른 bnb ROCm 브랜치**(0.46+ multi-backend, flash-attn ROCm 지원 커널) 재빌드가 다음 스파이크. 4bit **forward/inference는 정상**(수치게이트 PASS)이라 추론용도는 가능.
+- **70B 미시도**: 32B-4bit backward가 비실용이면 72B/70B-4bit는 자명하게 더 나쁨 → coordinator 지시대로 시도 안 함(리소스 낭비 회피).
+- **★견고한 경로 = bf16**: 7B bf16(112step)·**14B bf16 qkvo+MLP seq1024 60.0% 채점 완료(banked 최고)**. 어댑터 `models/qwen-react-lora-14b-rocm`(275MB) 생존 확인. gfx1151에서 **bf16 LoRA는 완전히 안정**, 4bit만 미성숙.
+- **세션 안전**: eager 변형은 GPU를 웨지 안 시켜 **이번엔 재부팅 소모 없이** 판정 완료(어젯밤 SDPA 웨지=1 재부팅 소모와 대비).
 
 ## ✅✅ Gate A 통과 (2026-07-12, 핵심 관문 돌파)
 - torch **2.10.0+rocm7.13.0a20260513** (cp312), `cuda_available=True`, device=AMD Radeon Graphics(gfx1151).
