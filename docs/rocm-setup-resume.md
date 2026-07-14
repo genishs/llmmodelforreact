@@ -130,3 +130,27 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 - **재빌드**: 영속 위치 `~/bnb-rocm`(ext4, 크래시 생존)에 빌드 — 이번엔 /tmp 회피. cmake+ninja(venv), `-DCOMPUTE_BACKEND=hip -DBNB_ROCM_ARCH=gfx1151 -DCMAKE_HIP_COMPILER=$DEVEL/lib/llvm/bin/amdclang++ -DCMAKE_PREFIX_PATH=$DEVEL`. **컴파일 ~20s**, `.so` 링크 성공 → `uv pip install -e . --no-build-isolation`(editable .pth를 `~/bnb-rocm`로 갱신).
 - **★게이트 PASS**: `scripts/test_bnb_nf4_numeric.py` → nf4 quant/dequant 왕복 finite·rel_err **0.0956**, Linear4bit vs fp16 finite·rel_err **0.0936**(둘 다 임계 이내). `lib: ROCm / libbitsandbytes_rocm713.so` 로드확인. (`rocminfo not found` 경고는 bnb arch 자동탐지 폴백일 뿐 무해 — .so는 정상적재.) **4bit 트랙(32B/70B) 언블록.** 로그 `logs/bnb_nf4_numeric.log`, 빌드로그 `logs/bnb_rebuild.log`.
 - **재현 메모(다음 크래시 대비)**: bnb를 **절대 /tmp에 두지 말 것**. `~/bnb-rocm`에 소스 존재하면 `uv pip install -e . --no-build-isolation`만으로 즉시 복구, 소실 시 위 5줄.
+
+## ⚠️ transformers 버전 게이트 우회 (2026-07-14) — bnb 0.43.3 → 라벨 0.46.1
+- transformers **5.13.1**의 4bit 로더가 `bitsandbytes>=0.46.1` 요구(`validate_environment`) → 우리 빌드 0.43.3.dev 거부.
+- **필요 API는 이미 존재·시그니처 일치 확인**: `Params4bit.from_prequantized(data,quantized_stats,requires_grad,device,**kwargs)`(transformers가 `module=`도 넘기나 **kwargs가 흡수), `Linear4bit` OK, nf4 forward 수치게이트 PASS. → **API 호환은 검증됨.**
+- **조치(가역)**: `~/bnb-rocm/setup.py` version을 `0.46.1`로 라벨링 후 editable 재설치 → `importlib.metadata.version('bitsandbytes')==0.46.1`로 게이트 통과. **실소스는 여전히 0.43.3.dev+gfx1151패치**(주석에 명시).
+
+## ⛔ 32B 4bit smoke — FORWARD OK · BACKWARD가 gfx1151 GPU 웨지 (2026-07-14 23:34, ★핵심 블로커)
+- 커맨드: `--backend cuda --dtype bf16 --load-4bit --base .../qwen2.5-coder-32b-bnb-4bit --lora-mlp --seq 512 --smoke 5 --grad-ckpt`. 로그 `logs/smoke_32b_rocm.log`.
+- **로드·forward는 정상**: 771텐서 4bit 적재(~19s), trainable 134M/0.408%, **host RAM peak ~36GB**(4bit ~19GB + 로더 오버헤드; 60GB 안에 안전), forward loss 계산 성공(SDPA 실험적 경고 출력됨=forward 통과).
+- **backward에서 즉사**: `(out.loss*SCALE/accum).backward()` → grad-checkpoint recompute→backward 경로에서 **`torch.AcceleratorError: HIP error: unspecified launch failure`(hipErrorLaunchFailure)**. 이후 `hipModuleUnload failed` 연발.
+- **★2차 피해=GPU 컨텍스트 웨지**: launch-failure가 amdgpu 링을 매달아 이후 **`torch.cuda.is_available()=False`, device_count=0**(모든 신규 프로세스). `gpu_recovery=-1`(auto)이나 **gfx1151=APU라 커널 리셋 미작동** → **재부팅 필요**. sysfs `card1/device/reset`·dmesg는 root전용, **이 세션 sudo 무권한** → 복구 불가. **← 이 웨지가 이전 오퍼레이터 콘솔 크래시의 유력 원인.**
+- **원인 좁힘(높은 확신)**: 14B **bf16(비-4bit)** qkvo+MLP seq1024 grad-ckpt 본런은 112step 정상완주(=SDPA·grad-ckpt backward는 gfx1151에서 일반적으로 OK). 32B의 유일한 신규변수=**bnb 4bit(Linear4bit) backward**. 또한 forward-only 수치게이트는 backward·**double-quant**(체크포인트는 `bnb_4bit_use_double_quant=True`, 게이트는 미검사)를 커버 안 함. → **4bit autograd backward 커널이 유력 용의자.** 단 GPU 死로 격리검증 미완.
+- **판정**: 4bit forward/inference는 OK, **4bit QLoRA 학습 backward는 이 bnb-ROCm/gfx1151 빌드에서 불안정**(잠정). 32B/70B 4bit **학습** 트랙 블록.
+
+## ▶️ 재부팅 직후 다음 세션 즉시실행 플랜 (전부 준비·커밋됨)
+0. **재부팅 필수**(GPU 웨지 해제). 부팅 후 `torch.cuda.is_available()` True 확인.
+1. **backward 격리 진단**(신규 `scripts/test_bnb_nf4_backward.py`): `--stage 1..4` 단독 or 전체. no-dq/dq × forward/backward 4단계 → **로그 마지막 성공단계=웨지지점**. 어느 커널인지 확정. (웨지 가능하니 GPU작업 전 단독실행.)
+2. **coordinator 픽스 사다리**(첫 clean backward에서 멈춤):
+   - ① **eager 어텐션**(#1 용의자=실험적 SDPA): 신규플래그 `--attn-eager`(train_directml.py에 구현·커밋됨. `attn_implementation=eager` + flash/mem-eff SDP 백엔드 비활성). 32B smoke에 붙여 재시도. 로그 `logs/smoke_32b_try2.log`.
+   - ② 여전히 실패 → **grad-ckpt 제거**(`--grad-ckpt` 빼기; 32B-4bit ~24GB라 seq512 무-ckpt도 60GB 안에 들 수 있음, host RAM 감시). recompute-backward 경로 제거.
+   - ③ 여전히 → `AMD_SERIALIZE_KERNEL=3`로 2step 재실행 → 정확한 실패커널명 캡처·기록.
+   - ④ 다 실패 → 4bit **학습** backward가 gfx1151/이 bnb빌드에서 깨진 것으로 확정. (7B/14B bf16 2step은 여전히 되는지로 GPU 건강 재확인.) 그러면 32B는 **더 신규 bnb ROCm 브랜치 재빌드**(0.46+ IFU-multi-backend류)가 다음 스파이크. 그동안 14B(60.0%)가 banked 최고.
+3. eager/무-ckpt로 clean backward 나오면 → 실 s/step 측정 → 데드라인 맞춰 sizing(2ep/seq/step) → 32B 본런→어댑터→heldout7 채점→scores-8060 등록→커밋.
+- **게이트 교훈**: `test_bnb_nf4_numeric.py`는 **forward-only라 불충분**. 4bit 학습 GO 판정은 반드시 `test_bnb_nf4_backward.py`(backward+double-quant)까지 PASS해야 함.
