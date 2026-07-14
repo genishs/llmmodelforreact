@@ -111,3 +111,22 @@ Ubuntu 26.04 + ROCm(gfx1151) 전환 → **torch 2.10.0+rocm7.13 설치·Gate A �
 1. **node/tsc 설치**(현재 미설치): `sudo apt install nodejs npm` 또는 nvm → `tsc_eval`에서 `npm install`.
 2. `eval_hard_tsc.py --adapter models/qwen-react-lora-14b-rocm --heldout --max-new 4096`(heldout7, base bf16) → `scores-8060.jsonl` 등록 → 62.9% 베이스·8060 r5mlp(80%)·4060(95%) 대조.
 3. 이어서 32B: nf4 numeric test → smoke(실 step시간 측정) → 본런.
+
+## 📦 70B급 2종 사전다운로드 완료 (2026-07-13, Windows halo-pm 측) — Linux에서 즉시 사용가능
+> 사용자 지시로 **크기 상한 탐색 테스트용** 70B급 nf4를 Windows에서 공유 파티션에 미리 받아둠. GitHub push 없이도 Ubuntu 부팅 즉시 `models/base/`에서 확인됨. 받은 스크립트: `scripts/dl_70b_tests.py`(순차·무한재개·디스크가드), 로그 `logs/dl_70b_tests.log`.
+
+| 모델 | 경로 | 크기 | 샤드 | 상태 |
+|---|---|---|---|---|
+| `unsloth/Qwen2.5-72B-Instruct-bnb-4bit` | `models/base/qwen2.5-72b-instruct-bnb-4bit` | 39GB | 9 | ✅ clean(index/tokenizer/config 완비, .incomplete 없음) |
+| `unsloth/Llama-3.3-70B-Instruct-bnb-4bit` | `models/base/llama-3.3-70b-instruct-bnb-4bit` | 37GB | 8 | ✅ clean |
+
+- **둘 다 nf4(quant_method=bitsandbytes)** → 로드/학습에 **bnb-ROCm(gfx1151) 필수**(이미 빌드 완료). 32B와 동일 `--load-4bit` 경로 재사용 예상.
+- **디스크 주의**: 다운로드 후 D: 여유 **~42GB(95% 사용)**. 활성 데이터 드라이브라 빠듯 — 실효 없는 쪽은 회수 가능. 70B QLoRA는 어댑터 소·nf4라 fp16 스파이크 없음(정적 ~40GB가 주비용).
+- **성격**: 코드특화 base(Qwen2.5-Coder) 없는 체급이라 **전부 범용 모델**. 이전 교훈(좁은 React/TS는 코드특화>범용/크기, `scores` r6qwen3 base-exp)상 32B Coder 대비 실효는 미지수 → **60GB 통합메모리에서 seq/배치·step time 실측이 목적.** 우선순위는 14B채점·32B 본런 뒤(비강제).
+
+## ✅✅ bnb-ROCm 재빌드 + nf4 GPU 수치검증 PASS (2026-07-14 23:28, autonomous-operator, 크래시 복구세션)
+- **크래시로 bnb 소실 발견**: 이전 세션의 bnb 소스/`libbitsandbytes_rocm713.so`가 **/tmp 스크래치패드에 있어 크래시로 전멸**(editable .pth는 죽은 /tmp 경로를 가리켜 `import bitsandbytes` 실패). `_rocm_sdk_devel`(9.3GB, venv=ext4)·패치파일(레포)은 생존.
+- **정확한 소스 복원**: 패치 base blob `3836858`(csrc/kernels.hip)을 전 브랜치 검색 → **ROCm 포크 `ROCm/bitsandbytes` 브랜치 `fix/warp-size-gfx942`가 정확히 일치**. upstream 아님(BNB_ROCM_ARCH·kernels.hip은 포크 전용). v0.43.3.dev. 패치 clean 적용(gfx11/12 wave32 브랜치).
+- **재빌드**: 영속 위치 `~/bnb-rocm`(ext4, 크래시 생존)에 빌드 — 이번엔 /tmp 회피. cmake+ninja(venv), `-DCOMPUTE_BACKEND=hip -DBNB_ROCM_ARCH=gfx1151 -DCMAKE_HIP_COMPILER=$DEVEL/lib/llvm/bin/amdclang++ -DCMAKE_PREFIX_PATH=$DEVEL`. **컴파일 ~20s**, `.so` 링크 성공 → `uv pip install -e . --no-build-isolation`(editable .pth를 `~/bnb-rocm`로 갱신).
+- **★게이트 PASS**: `scripts/test_bnb_nf4_numeric.py` → nf4 quant/dequant 왕복 finite·rel_err **0.0956**, Linear4bit vs fp16 finite·rel_err **0.0936**(둘 다 임계 이내). `lib: ROCm / libbitsandbytes_rocm713.so` 로드확인. (`rocminfo not found` 경고는 bnb arch 자동탐지 폴백일 뿐 무해 — .so는 정상적재.) **4bit 트랙(32B/70B) 언블록.** 로그 `logs/bnb_nf4_numeric.log`, 빌드로그 `logs/bnb_rebuild.log`.
+- **재현 메모(다음 크래시 대비)**: bnb를 **절대 /tmp에 두지 말 것**. `~/bnb-rocm`에 소스 존재하면 `uv pip install -e . --no-build-isolation`만으로 즉시 복구, 소실 시 위 5줄.
