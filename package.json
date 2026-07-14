@@ -1,0 +1,13 @@
+{
+  "name": "ai-model-tsc-eval-sandbox",
+  "version": "1.0.0",
+  "private": true,
+  "description": "tsc 하드평가 샌드박스 deps (8060S). 상위 study/ 프로젝트와 격리하기 위해 ai_model 로컬에 둠. eval_hard_tsc.py가 ROOT/node_modules/typescript/bin/tsc 를 참조.",
+  "dependencies": {
+    "typescript": "5.5.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0"
+  }
+}
