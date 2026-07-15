@@ -141,6 +141,62 @@ def stream_load_to_device(model_path, device, dtype):
     return model
 
 
+def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64, skip=("lm_head",)):
+    """bf16 원본 체크포인트에서 HQQ 4bit로 즉석 양자화(on-the-fly) 로드.
+
+    bitsandbytes(gfx1151 wave32/wave64 커널 불일치로 GPU wedge 원인, 2026-07-14 확정)를
+    전혀 쓰지 않는 경로. HQQ는 커스텀 HIP 커널이 없고 backward가 dequant+평범한 matmul
+    (torchao/HQQ 게이트 테스트 통과, scripts/test_nf4_backward_gate.py)이라 안전하다.
+
+    ★ 2026-07-15 발견: transformers 5.13.1의 `HqqConfig` + `from_pretrained(quantization_config=...)`
+    자동경로는 깨져 있다 — `transformers/quantizers/base.py:289 get_quantize_ops()`가 최근 리팩터로
+    추상 인터페이스가 됐는데 `quantizer_hqq.py`가 아직 구현을 안 해서 즉시
+    `NotImplementedError: QuantizationMethod.HQQ is not available yet` 로 실패한다(실측 확인).
+    → transformers 통합을 완전히 우회하고, PASS한 게이트 테스트(test_nf4_backward_gate.py)와
+    동일하게 `HQQLinear(linear_layer, quant_config, ...)`를 직접 호출해 각 nn.Linear를
+    수동으로 치환한다(peft의 dispatch_hqq는 타입만 보고 HQQLinear면 인식하므로 문제 없음).
+
+    주의: 32B는 디스크에 bnb-prequantized(nf4, quant_method=bitsandbytes) 4bit만 있고
+    bf16 원본이 없다 → 이 함수로 못 씀(양자화 포맷 자체가 다름, bnb 커널 없이 언팩 불가).
+    bf16 원본이 디스크에 있는 모델(예: 14B)에만 적용 가능. HQQBackend.PYTORCH는
+    ROCm에서 유일하게 지원되는 백엔드(ATEN은 CUDA 전용)이므로 명시적으로 고정한다.
+    """
+    from hqq.core.quantize import HQQLinear, BaseQuantizeConfig, HQQBackend
+    HQQLinear.set_backend(HQQBackend.PYTORCH)  # ROCm: ATEN 불가, PYTORCH(순수 dequant+matmul)만 지원
+
+    # bf16 원본을 기존 스트리밍 로더로 device에 직접 적재(호스트 RAM 피크 = 텐서 1개분).
+    model = stream_load_to_device(model_path, device, compute_dtype)
+
+    qcfg_template = BaseQuantizeConfig(nbits=nbits, group_size=group_size, axis=1)
+    n_quant = 0
+
+    def _walk(module, prefix=""):
+        nonlocal n_quant
+        for name, child in list(module.named_children()):
+            full = f"{prefix}.{name}" if prefix else name
+            if isinstance(child, torch.nn.Linear) and not any(s in full for s in skip):
+                hqq_layer = HQQLinear(child, quant_config=qcfg_template, compute_dtype=compute_dtype,
+                                       device=str(device), del_orig=True)
+                setattr(module, name, hqq_layer)
+                n_quant += 1
+            else:
+                _walk(child, full)
+
+    log(f"  HQQ 수동 치환 시작(nbits={nbits} group_size={group_size} backend=PYTORCH,"
+        f" skip={skip}) — bf16 적재 완료 상태에서 in-place 양자화")
+    t0 = time.time()
+    _walk(model)
+    torch.cuda.empty_cache()  # del_orig=True로 해제된 bf16 원본 블록 회수
+    log(f"  HQQ 치환 완료: Linear {n_quant}개 → HQQLinear(4bit), {time.time()-t0:.1f}s")
+
+    # transformers 자동경로를 안 탔으므로 model.quantization_method가 안 설정됨.
+    # peft.prepare_model_for_kbit_training이 이 플래그로 hqq 분기(grad-ckpt hook,
+    # fp32 업캐스트 제외 등)를 타므로 수동으로 세팅해준다.
+    model.quantization_method = "hqq"
+    model.hqq_quantized = True
+    return model
+
+
 def load_prequantized_4bit(model_path, compute_dtype, attn_impl=None):
     """사전양자화(bnb nf4) 체크포인트 로드 — 32B 4bit용.
 
@@ -165,19 +221,28 @@ def load_prequantized_4bit(model_path, compute_dtype, attn_impl=None):
     return model
 
 
-def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_impl=None):
-    log(f"모델 로드: {model_path} (dtype={dtype}{', 4bit-prequant' if load_4bit else ''})")
+def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_impl=None,
+          quant="none", hqq_nbits=4, hqq_group_size=64):
+    log(f"모델 로드: {model_path} (dtype={dtype}"
+        + (', 4bit-prequant(bnb)' if load_4bit else '')
+        + (f', hqq-{hqq_nbits}bit-onthefly' if quant == "hqq" else '') + ")")
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    if load_4bit:
+    kbit = load_4bit or (quant == "hqq")
+    if quant == "hqq":
+        model = load_hqq_onthefly(model_path, device, dtype,
+                                   nbits=hqq_nbits, group_size=hqq_group_size)
+    elif load_4bit:
         model = load_prequantized_4bit(model_path, dtype, attn_impl=attn_impl)
+    else:
+        model = stream_load_to_device(model_path, device, dtype)
+
+    if kbit:
         from peft import prepare_model_for_kbit_training
         model = prepare_model_for_kbit_training(
             model, use_gradient_checkpointing=grad_ckpt)
-    else:
-        model = stream_load_to_device(model_path, device, dtype)
 
     lc = config["lora"]
     lora_config = LoraConfig(
@@ -187,14 +252,14 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
         lora_dropout=lc["lora_dropout"], bias=lc["bias"],
     )
     model = get_peft_model(model, lora_config)
-    if not load_4bit:
-        model = model.to(device)  # LoRA 신규 파라미터를 디바이스로 (4bit는 이미 device_map으로 GPU에 있고 .to() 불가)
+    if not kbit:
+        model = model.to(device)  # LoRA 신규 파라미터를 디바이스로 (4bit/hqq는 이미 device_map으로 GPU에 있고 .to() 불가)
     model.config.use_cache = False
 
     # gradient checkpointing: DirectML에서는 재계산이 캐싱 할당자에 버퍼를 더 쌓아
     # 오히려 VRAM 증가를 가속 → 기본 비활성.
-    # 4bit 경로는 prepare_model_for_kbit_training이 이미 grad-ckpt를 처리하므로 재적용 안 함.
-    if grad_ckpt and not load_4bit:
+    # kbit(4bit/hqq) 경로는 prepare_model_for_kbit_training이 이미 grad-ckpt를 처리하므로 재적용 안 함.
+    if grad_ckpt and not kbit:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
 
@@ -254,7 +319,16 @@ def main():
     ap.add_argument("--attn-eager", action="store_true",
                     help="gfx1151 backward 웨지 회피(2026-07-14 발견): 실험적 mem-efficient SDPA 대신 "
                          "eager(math) 어텐션 사용 + SDP flash/mem-efficient 백엔드 비활성. 4bit smoke 실패 시 #1 시도.")
+    ap.add_argument("--quant", choices=["none", "hqq"], default="none",
+                    help="none=기존(bf16 stream 또는 --load-4bit bnb). "
+                         "hqq=bitsandbytes 미사용, bf16 원본에서 HQQ 4bit 즉석 양자화(2026-07-15, gate 통과 경로). "
+                         "bf16 원본이 디스크에 있는 모델에만 적용 가능(32B는 bnb-prequant뿐이라 불가).")
+    ap.add_argument("--hqq-nbits", type=int, default=4, help="HQQ 비트수(기본 4)")
+    ap.add_argument("--hqq-group-size", type=int, default=64, help="HQQ group_size(기본 64)")
     args = ap.parse_args()
+
+    if args.quant == "hqq" and args.load_4bit:
+        raise SystemExit("--quant hqq와 --load-4bit(bnb)는 동시 사용 불가(서로 다른 4bit 포맷).")
 
     if args.attn_eager:
         # 실험적 AMD SDPA 커널을 backward에서 배제(gfx1151 launch-failure 회피).
@@ -302,7 +376,9 @@ def main():
 
     model, tok = build(model_path, device, config, dtype, args.grad_ckpt,
                        load_4bit=args.load_4bit,
-                       attn_impl=("eager" if args.attn_eager else None))
+                       attn_impl=("eager" if args.attn_eager else None),
+                       quant=args.quant, hqq_nbits=args.hqq_nbits,
+                       hqq_group_size=args.hqq_group_size)
 
     bs = tcfg["per_device_train_batch_size"]
     accum = tcfg["gradient_accumulation_steps"]
