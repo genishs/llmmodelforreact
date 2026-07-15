@@ -144,7 +144,19 @@ config `config/training_config.yaml`.
   **~1.3GB**(explorer·ShellHost) → **여유 ~1.2GB뿐**. `ho-admin-medit`은 입력이 **~10,400토큰**(22KB 파일)이라
   prefill이 GPU를 **7.8 / 8.2GB(95%)**까지 밀어붙인다. **문턱을 오간다 = 성공/실패가 그날 데스크톱 점유에 좌우.**
   (대조: `ho-admin-mlist` 2,114토큰은 안전하게 통과.)
-- **∴ 과거에 r4mlp·r6base의 medit이 성공한 건 운**이었다. **4060에서 medit은 신뢰성 있는 측정 수단이 아니다.**
+- **∴ medit은 4060에서 "느리지만 된다"** — 죽는 게 아니라 **벼랑에서 스래싱**한다. **WDDM이 GPU 초과분을
+  공유 시스템메모리로 스필**하므로 **완주는 하되 극단적으로 느리다**(실측: 분리 프로세스로 **58분+ 생존**,
+  GPU 99% 점유 유지). **"측정 불가"가 아니라 "1시간짜리 태스크"로 취급할 것.**
+- **★그럼 앞선 3번의 사망은 무엇이었나 = 하니스 백그라운드 태스크가 죽는다.** 같은 커맨드를
+  **PowerShell `Start-Process`로 분리**하면 산다. **장시간 GPU 작업은 반드시 분리 프로세스로 띄울 것.**
+- **★★ PID 함정(반드시 숙지)**: `venv\Scripts\python.exe`는 **런처 껍데기**다 — 실행 즉시 실제 인터프리터
+  (`...\Python311\python.exe`)를 **자식으로 띄우고 자신은 CPU 0으로 남는다**. `Start-Process`가 돌려주는 PID는
+  **껍데기 PID**이므로, **그걸 감시하면 작업이 살아있는데도 "죽었다"고 오판한다**(실제로 겪음).
+  **진짜 PID 찾기**: `Get-CimInstance Win32_Process -Filter "ParentProcessId = <껍데기PID>"` 또는
+  `Get-Process python | ? { $_.CPU -gt 0 }`. **CPU 시간이 도는 쪽이 진짜다.**
+- **⚠️ GPU 점유 확인 후 겹쳐 던지지 말 것**: `nvidia-smi --query-compute-apps`는 권한 부족으로 `[N/A]`만
+  보여줘 **누가 GPU를 쥐었는지 안 보인다**. `--query-gpu=memory.used,utilization.gpu`로 **총량·사용률**을 보라.
+  **7GB+/99%면 누군가 쓰는 중**이다(실제로 medit이 쥔 GPU에 학습을 겹쳐 던져 즉사시킴).
 - **⚠️ medit 제외의 대가**: cap384→1024 델타가 **17.2pp → 6.7pp로 쪼그라든다**(medit이 +0.8로 최대 기여자).
   **6태스크 부분측정은 사실상 admin-dae 하나에 의존** → 결론을 medit 없이 세우지 말 것.
 - **처방**: ①**`scripts/score_saved_dml.py --label <라벨>`로 오프라인 채점**(GPU 불필요) — 하니스가 생성물을
