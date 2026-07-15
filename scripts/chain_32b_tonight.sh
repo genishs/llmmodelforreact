@@ -58,7 +58,7 @@ echo "[$(date '+%F %T')] ✓ 검증 통과"
 
 # ---------- 3. 본런 발사 ----------
 echo "[$(date '+%F %T')] 32B HQQ 본런 발사"
-bash scripts/gpu_job.sh --name train32b -- \
+bash scripts/gpu_job.sh --name train32b --timeout 21600 -- \
   "$PY" src/train_directml.py \
     --backend cuda --dtype bf16 \
     --base "$BASE" \

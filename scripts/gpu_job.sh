@@ -46,6 +46,16 @@ PY="$VENV/bin/python"
 NODE_BIN=""
 if command -v node >/dev/null 2>&1; then
   NODE_BIN="$(dirname "$(command -v node)")"
+else
+  # 폴백(2026-07-15 야간 추가): 호출측이 **대화형 셸이 아니라 systemd --user 유닛**일 때
+  # (예: chain_score_32b.sh가 chainscore32b2.service 안에서 이 스크립트를 호출) PATH에 nvm이
+  # 없어 위 command -v가 실패한다 → NODE_BIN="" → 채점 유닛에 node가 안 실리고
+  # eval_hard_tsc.py의 subprocess.run(["node", TSC, ...])가 FileNotFoundError로 죽는다.
+  # 즉 위 주석의 "호출측은 전체 PATH를 가진 대화형 셸"이라는 전제가 체인 경로에서 깨진다.
+  # 대화형 PATH에 의존하지 말고 nvm 설치본을 직접 찾는다(glob 정렬상 마지막=최신 선택).
+  for _cand in "$HOME"/.nvm/versions/node/*/bin/node; do
+    [[ -x "$_cand" ]] && NODE_BIN="$(dirname "$_cand")"
+  done
 fi
 
 # Logs go to $HOME (ext4). The repo lives on an ntfs3 removable mount, which is a

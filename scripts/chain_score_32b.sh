@@ -27,12 +27,12 @@ echo "[$(date '+%F %T')] 채점 체인 시작"
 # ---------- 1. 본런 종료 대기 (최대 8시간) ----------
 echo "[$(date '+%F %T')] 32B 본런 종료 대기…"
 for i in $(seq 1 2880); do   # 2880 * 10s = 8h
-  if ! systemctl --user list-units 'gpujob-train32b-*' --no-legend 2>/dev/null | grep -q running; then
+  if ! systemctl --user list-units 'gpujob-train32b*-*' --no-legend 2>/dev/null | grep -q running; then
     break
   fi
   sleep 10
 done
-if systemctl --user list-units 'gpujob-train32b-*' --no-legend 2>/dev/null | grep -q running; then
+if systemctl --user list-units 'gpujob-train32b*-*' --no-legend 2>/dev/null | grep -q running; then
   echo "[$(date '+%F %T')] ✗ 중단: 8시간 내 본런이 안 끝남"; exit 1
 fi
 echo "[$(date '+%F %T')] 본런 종료 감지"
