@@ -1,0 +1,67 @@
+import { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+
+import * as EgovNet from '@/api/egovFetch';
+import URL from '@/constants/url';
+import CODE from '@/constants/code';
+
+interface Props { mode: string; }
+
+function EgovAdminDataAccessEdit({ mode }: Props) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const checkRef = useRef<React.RefObject<HTMLInputElement>[]>([]);
+
+  const [modeInfo, setModeInfo] = useState<{ mode: string; modeTitle?: string; editURL?: string }>({ mode });
+  const [detail, setDetail] = useState<{ [key: string]: any }>({});
+
+  const initMode = () => {
+    switch (mode) {
+      case CODE.MODE_CREATE:
+        setModeInfo({ ...modeInfo, modeTitle: '등록', editURL: '/dataaccess/insert' });
+        break;
+      case CODE.MODE_MODIFY:
+        setModeInfo({ ...modeInfo, modeTitle: '수정', editURL: `/dataaccess/update` });
+        break;
+      default:
+        navigate({ pathname: URL.ERROR }, { state: { msg: '' } });
+    }
+    retrieveDetail();
+  };
+
+  const retrieveDetail = () => {
+    if (modeInfo.mode === CODE.MODE_MODIFY) {
+      const retrieveDetailURL = `/dataaccess/update/${location.state?.uniqId}`;
+      EgovNet.requestFetch(retrieveDetailURL, {}, (resp) => setDetail(resp.result.dataAccessVO));
+    }
+  };
+
+  const updateBoard = () => {
+    const requestOptions = { method: modeInfo.mode === CODE.MODE_CREATE ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(detail) };
+    EgovNet.requestFetch(modeInfo.editURL!, requestOptions, (resp) => {
+      if (Number(resp.resultCode) === Number(CODE.RCV_SUCCESS)) navigate(URL.ADMIN_DATAACCESS);
+      else navigate({ pathname: URL.ERROR }, { state: { msg: resp.resultMessage } });
+    });
+  };
+
+  const deleteBoard = (uniqId: string) => {
+    EgovNet.requestFetch(`/dataaccess/delete/${uniqId}`, { method: 'DELETE' }, (resp) => {
+      if (Number(resp.resultCode) === Number(CODE.RCV_SUCCESS)) { alert('게시물이 삭제되었습니다.'); navigate(URL.ADMIN_DATAACCESS); }
+      else alert('ERR : ' + resp.resultMessage);
+    });
+  };
+
+  useEffect(initMode, [mode]);
+
+  return (
+    <div className="container">
+      <div className="c_wrap">
+        <div className="location"><ul><li><Link to={URL.MAIN} className="home">Home</Link></li><li><Link to={URL.ADMIN}>사이트관리</Link></li><li>데이터 접근권한 관리</li></ul></div>
+        <div className="layout"><EgovLeftNav /><div className="contents BOARD_CREATE_REG" id="contents"><div className="top_tit"><h1 className="tit_1">사이트관리</h1></div>{modeInfo.mode === CODE.MODE_CREATE && <h2 className="tit_2">데이터 접근권한 등록</h2>}
+          {modeInfo.mode === CODE.MODE_MODIFY && <h2 className="tit_2">데이터 접근권한 수정</h2>}
+          <div className="board_view2">{/* Dummy Fields for DataAccess */}<dl><dt>권한 ID</dt><dd>{detail.id}</dd></dl><dl><dt>리소스명</dt><dd>{detail.resourceName}</dd></dl>{/* Add more fields as needed based on actual data structure */}</div>
+          <div className="board_btn_area"><div className="left_col btn1"><button className="btn btn_skyblue_h46 w_100" onClick={updateBoard}>저장</button>{modeInfo.mode === CODE.MODE_MODIFY && <button className="btn btn_skyblue_h46 w_100" onClick={() => deleteBoard(detail.uniqId!)}>삭제</button>}</div><div className="right_col btn1"><Link to={URL.ADMIN_DATAACCESS} className="btn btn_blue_h46 w_100">목록</Link></div></div></div></div></div>
+  );
+}
+
+export default EgovAdminDataAccessEdit;

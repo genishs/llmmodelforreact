@@ -42,7 +42,13 @@ runs/
 wandb/
 
 # eval 중간 산출물(재생성 가능)
-eval_results/
+# ★eval_results/gen/ = 각 어댑터가 실제로 뱉은 산출물의 유일한 영속 기록.
+#  '재생성 가능'은 거짓 — 재생성엔 어댑터+GPU+수 시간이 든다. 하니스 v2의 전수 재점수는
+#  이 아카이브(.tsx)만으로 GPU 0에 돌아간다 = 프로젝트 최고 가치 자산. 반드시 커밋한다.
+#  ⚠️함정(8060 실측): 'eval_results/'처럼 디렉터리를 통째 제외하면 git이 하위를 '!'로
+#  되살리지 못한다. 'eval_results/*' + '!eval_results/gen/' 라야 동작한다.
+eval_results/*
+!eval_results/gen/
 .claude/
 
 # tsc 하드평가 npm 의존성(루트 설치분, 재생성 가능)
