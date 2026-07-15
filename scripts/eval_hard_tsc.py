@@ -28,7 +28,27 @@ from peft import PeftModel
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE = str(ROOT / "models" / "base" / "qwen2.5-coder-7b")
-EGOV = Path("d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src")
+
+
+def _resolve_egov():
+    """egov 실파일 소스 루트. 장비마다 sibling 체크아웃 위치가 달라 후보 탐색 + $EGOV_SRC 오버라이드.
+    Linux(ROCm 8060) sibling: .../twinspace_platform/egovGeoportal/src, Windows 원본: d:/..."""
+    import os
+    cands = []
+    if os.environ.get("EGOV_SRC"):
+        cands.append(Path(os.environ["EGOV_SRC"]))
+    cands += [
+        ROOT.parent.parent / "twinspace_platform" / "egovGeoportal" / "src",  # study/.. sibling
+        Path("/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"),
+        Path("d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src"),
+    ]
+    for c in cands:
+        if c.exists():
+            return c
+    return cands[0]
+
+
+EGOV = _resolve_egov()
 SANDBOX = ROOT / "tsc_eval"
 CASES = SANDBOX / "cases"
 ARCHIVE_DIR = ROOT / "eval_results" / "gen"  # 생성 출력 영구보존(파일별 단독컴파일 소스)
@@ -96,15 +116,22 @@ HELDOUT_TASKS = [
 ]
 
 
-def build_model(adapter, base=None):
+def build_model(adapter, base=None, base_load="4bit"):
+    """base_load: '4bit'=bnb nf4(양자화 어댑터/32B·70B용), 'bf16'=무양자 bf16 로드
+    (★bf16로 학습된 어댑터는 bf16 base에 얹어야 정합 — 14B ROCm 어댑터). 'fp16'도 지원."""
     base = base or BASE
     tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                             bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        base, quantization_config=bnb, device_map="auto", trust_remote_code=True)
+    if base_load == "4bit":
+        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                 bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            base, quantization_config=bnb, device_map="auto", trust_remote_code=True)
+    else:
+        dtype = torch.bfloat16 if base_load == "bf16" else torch.float16
+        model = AutoModelForCausalLM.from_pretrained(
+            base, torch_dtype=dtype, device_map="auto", trust_remote_code=True)
     model = PeftModel.from_pretrained(model, str(ROOT / adapter))
     model.eval()
     return tok, model
@@ -189,6 +216,8 @@ def main():
     ap.add_argument("--only", default="", help="쉼표구분 task 이름만 측정(잘림검증 등 단일태스크용)")
     ap.add_argument("--heldout", action="store_true", help="확장 held-out eval셋(egov 4파일 변환)으로 측정")
     ap.add_argument("--base", default="", help="베이스 모델 경로 오버라이드(다른 베이스 어댑터 측정용)")
+    ap.add_argument("--base-load", default="4bit", choices=["4bit", "bf16", "fp16"],
+                    help="base 로드방식: 4bit(bnb nf4, 기본/32B·70B), bf16(무양자, bf16학습 어댑터용)")
     args = ap.parse_args()
 
     base_tasks = HELDOUT_TASKS if args.heldout else TASKS
@@ -202,7 +231,7 @@ def main():
     for f in CASES.glob("*.tsx"):
         f.unlink()
 
-    tok, model = build_model(args.adapter, base=(args.base or None))
+    tok, model = build_model(args.adapter, base=(args.base or None), base_load=args.base_load)
     eos_id, suppress_tokens = gen_setup(tok)
 
     files = []  # (task, filename, in_len, nchars, truncated)
