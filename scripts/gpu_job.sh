@@ -40,6 +40,14 @@ REPO_DEFAULT="/run/media/user/새 볼륨/Documents/workspace/study/ai_model"
 VENV="/home/user/.venvs/ai_model_rocm"
 PY="$VENV/bin/python"
 
+# node(nvm)의 bin 디렉터리를 호출측(대화형 셸, 전체 PATH 보유)에서 미리 찾아 둔다.
+# systemd --user 유닛은 .bashrc/.nvm을 소싱하지 않아 PATH에 node가 없다 — eval_hard_tsc.py의
+# `subprocess.run(["node", ...])`(tsc 실행)가 FileNotFoundError로 죽는 원인(2026-07-15 실측).
+NODE_BIN=""
+if command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(dirname "$(command -v node)")"
+fi
+
 # Logs go to $HOME (ext4). The repo lives on an ntfs3 removable mount, which is a
 # bad place for a log a systemd unit appends to across a GPU reset.
 LOG_DIR="${GPU_JOB_LOG_DIR:-$HOME/gpu_jobs/logs}"
@@ -51,6 +59,7 @@ TIMEOUT=3600
 SERIALIZE=0
 BLOCKING=0
 FOREGROUND=0
+ENVS=()
 
 die() { echo "gpu_job: error: $*" >&2; exit 2; }
 
@@ -64,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --serialize)  SERIALIZE=1; shift ;;
     --blocking)   BLOCKING=1; shift ;;
     --debug)      SERIALIZE=1; BLOCKING=1; shift ;;
+    --setenv)     ENVS+=("${2:?--setenv needs KEY=VAL}"); shift 2 ;;
     --timeout)    TIMEOUT="${2:?--timeout needs a value}"; shift 2 ;;
     --cwd)        CWD="${2:?--cwd needs a value}"; shift 2 ;;
     --foreground) FOREGROUND=1; shift ;;
@@ -129,6 +139,7 @@ INNER="$RUN_DIR/${UNIT}.sh"
   printf '#!/usr/bin/env bash\n'
   printf 'set -uo pipefail\n'
   printf 'export PATH=%q:"$PATH"\n' "$VENV/bin"
+  [[ -n "$NODE_BIN" ]] && printf 'export PATH=%q:"$PATH"\n' "$NODE_BIN"
   printf 'export VIRTUAL_ENV=%q\n' "$VENV"
   # NEVER set HSA_OVERRIDE_GFX_VERSION -- setting it (even empty) breaks
   # torch.cuda.is_available() on this box. Leaving it unset is what works.
@@ -136,6 +147,12 @@ INNER="$RUN_DIR/${UNIT}.sh"
   printf 'export PYTHONUNBUFFERED=1\n'
   [[ $SERIALIZE -eq 1 ]] && printf 'export AMD_SERIALIZE_KERNEL=3\n'
   [[ $BLOCKING  -eq 1 ]] && printf 'export HIP_LAUNCH_BLOCKING=1\n'
+  # --setenv KEY=VAL: the unit is spawned by the user manager, NOT forked from the
+  # caller's shell, so exported vars do NOT propagate. They must be written in here.
+  for kv in ${ENVS[@]+"${ENVS[@]}"}; do
+    [[ "$kv" == *=* ]] || die "--setenv expects KEY=VAL, got '$kv'"
+    printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}"
+  done
   printf 'cd %q || exit 3\n' "$CWD"
   printf '\n'
   printf 'gpu_state() {\n'
