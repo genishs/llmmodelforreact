@@ -97,5 +97,46 @@ gh 인증=genishs(repo scope, keyring) → **별도 인증 없이** push/pull. �
 (`.mcp.json` 등록, 5툴). 서빙 기본 어댑터·로더는 `src/model_loader.py`. 상세 `docs/mcp-7b-usage.md`.
 
 ## 학습 파이프라인
-`collect_github_data.py` → `build_dataset_v2.py` → `src/train_directml.py --dtype fp16 --seq N`
-(`--lora-r`/`--lora-mlp`/`--smoke` 지원) → `src/inference_7b.py`. config `config/training_config.yaml`.
+`collect_github_data.py` → `build_dataset_v2.py` → **학습 스크립트 2종 중 택1**(↓) → `src/inference_7b.py`.
+config `config/training_config.yaml`.
+
+### ⚠️ 학습 스크립트는 2종이다 — 헷갈리면 OOM (2026-07-15 실측으로 정정)
+| 스크립트 | 백엔드 | 4bit | 용도 |
+|---|---|---|---|
+| **`src/train_qlora.py`** | CUDA | **O**(BitsAndBytesConfig nf4) | **4060(8GB)의 모든 r4~r6 어댑터 = 이것.** 8GB엔 이것만 가능 |
+| `src/train_directml.py` | DirectML / CUDA / ROCm | **X**(fp16·bf16 전용) | 8060 트랙(DirectML 커스텀루프 → ROCm 이중백엔드) |
+
+- **4060 정본**: `python src/train_qlora.py --seq 768 --rank 16 --target qkvo_mlp --out <경로>`
+  (인자: `--config --seq --out --rank --alpha --target{qkvo,qkvo_mlp} --epochs --base --max-steps`)
+- **8060 정본**: `python src/train_directml.py --backend {directml,cuda,auto} --dtype {fp16,bf16} --seq N`
+  (`--lora-r`/`--lora-mlp`/`--smoke`/`--train-file`/`--base`/`--epochs`/`--optim` 지원)
+- **`train_directml.py`로 4060 어댑터를 재현하면 fp16 7B(14GB)가 8GB에 안 들어가 OOM**한다
+  (`ForCausalLMLoss`의 `logits.float()`에서 폭사, "22.20 GiB is allocated"). 실제로 겪었다.
+  단서는 `comms/scores-4060.jsonl`의 `base: "4bit"` — **어댑터가 4bit면 `train_qlora.py`다.**
+
+### ⚠️ config 함정 2개
+1. **`train_qlora.py`엔 `--train-file`이 없다** — 학습셋은 `cfg["data"]["train_file"]`에서 읽는다.
+   다른 데이터로 돌리려면 **config 사본을 만들어 `--config`로 넘길 것**(예: `config/training_config_r7abl.yaml`).
+   (`train_directml.py`엔 `--train-file`이 있다 — 이것도 두 스크립트의 차이.)
+2. **config의 `fp16: false`·`gradient_checkpointing: false`는 스크립트가 런타임에 덮어쓴다**
+   (실제 `training_args.bin`엔 둘 다 `True`). **config 파일만 보고 학습 조건을 판단하지 말 것** —
+   정본은 `models/*/checkpoint-*/training_args.bin`이다.
+
+### 데이터 빌드 — `--cap`이 최대 레버 (2026-07-15 규명)
+- `build_dataset_v2.py --cap N --gh-out-cap M`. **`--cap`은 출력상한이 아니라 alpaca 전체 프롬프트 토큰 상한.**
+- **기본값 `--cap 384`는 `handcrafted_synth_egovreal.jsonl`(실제 egov 파일 변환) 10쌍을 0개 채택한다**(전부 384 초과).
+  그런데 **held-out 평가는 전부 실제 egov 파일 변환**이다 → **평가 스킬의 교재를 0개 받고 시험을 보게 된다.**
+  이것 하나가 **r4mlp 71.4% → r6base 88.6% (+17.2pp)** 의 전부였다(나머지 변인은 `training_args.bin` 전 필드 diff로 배제).
+- **r6base 재현**: `python src/build_dataset_v2.py --cap 1024 --gh-out-cap 512` → **351개(315/36)**.
+  **r4mlp 재현**: 무플래그(=cap384) → 283개(254/29).
+- 빌더 구조: `SYNTH_GLOB="./data/handcrafted_synth*.jsonl"`만 글롭한다. `HANDCRAFTED_QA`는
+  **`src/build_dataset.py:17`의 코드 상수**(파일 아님). **`.bak`는 글롭에서 빠져 봉인 상태**(round5·admin_round6).
+
+### 측정 — 판정은 held-out 점수로만, **val_loss로 하지 말 것**
+- 캐논: `python scripts/eval_hard_tsc.py --adapter <경로> --label <이름> --heldout --max-new 4096`
+  (harness_ver `HELDOUT7-mn4096-lf-PERFILE-noTS2347`, `--base`/`--base-load{4bit,bf16,fp16}` 지원).
+- **val_loss는 일반화와 역행한다(실측)**: r4mlp `eval_loss 0.3853`(더 낮음) → **71.4%** /
+  r6base `0.4096` → **88.6%**. **loss 곡선이 예쁜 걸 성공 신호로 읽지 말 것.**
+- **데이터는 양이 아니라 커버리지**: 짧은 합성 스킬 10개 추가(r6admin) = **-14.3pp 회귀**,
+  긴 실파일 9개 = **+17pp**. **"타깃 스킬을 짧게 만들어 넣기"는 이미 실패했다.**
+  새 데이터는 **소량·긴 실파일 형태**로, **대조군과 동시 측정**할 것.
