@@ -4,3 +4,13 @@
 {"file": "pages/admin/manager/EgovAdminPasswordUpdate.jsx", "out": "EgovAdminPasswordUpdate.tsx", "status": "pass", "errors": [], "lines": 194, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
 {"file": "pages/admin/notice/AdminNoticeCreatePopup.jsx", "out": "AdminNoticeCreatePopup.tsx", "status": "pass", "errors": [], "lines": 96, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
 {"file": "pages/admin/notice/EgovAdminNoticeDetail.jsx", "out": "EgovAdminNoticeDetail.tsx", "status": "pass", "errors": [], "lines": 241, "harness": "eval_hard_tsc.run_tsc(per-file, TS2347-excluded)"}
+{"skill_id": "admin-list-table", "status": "pass", "errors": [], "tokens": 285}
+{"skill_id": "admin-list-paging", "status": "pass", "errors": [], "tokens": 268}
+{"skill_id": "admin-search-form", "status": "pass", "errors": [], "tokens": 281}
+{"skill_id": "admin-location-state", "status": "pass", "errors": [], "tokens": 247}
+{"skill_id": "admin-edit-submit", "status": "pass", "errors": [], "tokens": 308}
+{"skill_id": "admin-detail-nullguard", "status": "pass", "errors": [], "tokens": 223}
+{"skill_id": "admin-jsx-attrs", "status": "pass", "errors": [], "tokens": 238}
+{"skill_id": "admin-groupend", "status": "pass", "errors": [], "tokens": 191}
+{"skill_id": "admin-status-badge", "status": "pass", "errors": [], "tokens": 227}
+{"skill_id": "admin-useeffect-fetch", "status": "pass", "errors": [], "tokens": 242}
