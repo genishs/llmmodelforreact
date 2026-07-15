@@ -62,6 +62,10 @@ def main():
                     help="0=full. >0이면 그만큼만 학습(스모크용, 저장 생략)")
     ap.add_argument("--epochs", type=int, default=0, help="num_train_epochs 오버라이드(0=config)")
     ap.add_argument("--base", default="", help="베이스 모델 경로 오버라이드(0=config; 예: 다른 베이스 실험)")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="학습 seed(기본 42=기존 전 어댑터와 동일). ★분산 통제용: 데이터·설정을 "
+                         "고정하고 이것만 바꿔 반복하면 run-to-run 노이즈 바닥을 잴 수 있다. "
+                         "그 바닥보다 작은 점수차는 데이터 효과로 귀속하면 안 된다.")
     args = ap.parse_args()
     smoke = args.max_steps > 0
 
@@ -144,6 +148,9 @@ def main():
         max_steps=(args.max_steps if smoke else -1),
         save_strategy=("no" if smoke else "steps"),
         report_to="none",
+        # seed는 데이터 셔플·드롭아웃·초기화를 지배한다. 기본 42 고정이면 분산을 잴 수 없어
+        # 어댑터 간 점수차를 전부 "데이터 효과"로 오귀속하게 된다(2026-07-15 실측 경고 참조).
+        seed=args.seed,
     )
     trainer = Trainer(
         model=model, args=targs,
