@@ -20,6 +20,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import torch
@@ -27,6 +28,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+from train_directml import load_hqq_onthefly  # noqa: E402  (src/train_directml.py의 검증된 HQQ 스트리밍 로더 재사용)
+
 BASE = str(ROOT / "models" / "base" / "qwen2.5-coder-7b")
 
 
@@ -116,14 +120,24 @@ HELDOUT_TASKS = [
 ]
 
 
-def build_model(adapter, base=None, base_load="4bit"):
-    """base_load: '4bit'=bnb nf4(양자화 어댑터/32B·70B용), 'bf16'=무양자 bf16 로드
-    (★bf16로 학습된 어댑터는 bf16 base에 얹어야 정합 — 14B ROCm 어댑터). 'fp16'도 지원."""
+def build_model(adapter, base=None, base_load="4bit", quant="none", hqq_nbits=4, hqq_group_size=64):
+    """base_load: '4bit'=bnb nf4(양자화 어댑터/32B·70B용, bitsandbytes 필요 — gfx1151 wedge 위험),
+    'bf16'=무양자 bf16 로드(★bf16로 학습된 어댑터는 bf16 base에 얹어야 정합 — 14B ROCm 어댑터),
+    'fp16'도 지원.
+
+    quant='hqq'면 base_load는 무시하고 src/train_directml.load_hqq_onthefly()로 bf16 원본을
+    HQQ 4bit로 즉석 양자화해 로드한다(bitsandbytes 미사용, ROCm/gfx1151 안전 경로).
+    32B처럼 bf16이 통합메모리 총량을 넘는 모델도 레이어 단위 스트리밍이라 안전하게 적재된다.
+    """
     base = base or BASE
     tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    if base_load == "4bit":
+    if quant == "hqq":
+        device = torch.device("cuda")
+        model = load_hqq_onthefly(base, device, torch.bfloat16,
+                                   nbits=hqq_nbits, group_size=hqq_group_size)
+    elif base_load == "4bit":
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                  bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
         model = AutoModelForCausalLM.from_pretrained(
@@ -217,7 +231,14 @@ def main():
     ap.add_argument("--heldout", action="store_true", help="확장 held-out eval셋(egov 4파일 변환)으로 측정")
     ap.add_argument("--base", default="", help="베이스 모델 경로 오버라이드(다른 베이스 어댑터 측정용)")
     ap.add_argument("--base-load", default="4bit", choices=["4bit", "bf16", "fp16"],
-                    help="base 로드방식: 4bit(bnb nf4, 기본/32B·70B), bf16(무양자, bf16학습 어댑터용)")
+                    help="base 로드방식: 4bit(bnb nf4, 기본/32B·70B), bf16(무양자, bf16학습 어댑터용). "
+                         "--quant hqq 사용 시 무시됨.")
+    ap.add_argument("--quant", choices=["none", "hqq"], default="none",
+                    help="hqq=bitsandbytes 미사용, bf16 원본에서 HQQ 4bit로 즉석 양자화해 로드"
+                         "(train_directml.py --quant hqq와 동일 경로/파라미터 공유). "
+                         "32B처럼 bf16이 통합메모리 총량을 넘는 모델도 레이어 스트리밍이라 안전.")
+    ap.add_argument("--hqq-nbits", type=int, default=4, help="HQQ 비트수(기본 4)")
+    ap.add_argument("--hqq-group-size", type=int, default=64, help="HQQ group_size(기본 64)")
     args = ap.parse_args()
 
     base_tasks = HELDOUT_TASKS if args.heldout else TASKS
@@ -231,7 +252,8 @@ def main():
     for f in CASES.glob("*.tsx"):
         f.unlink()
 
-    tok, model = build_model(args.adapter, base=(args.base or None), base_load=args.base_load)
+    tok, model = build_model(args.adapter, base=(args.base or None), base_load=args.base_load,
+                             quant=args.quant, hqq_nbits=args.hqq_nbits, hqq_group_size=args.hqq_group_size)
     eos_id, suppress_tokens = gen_setup(tok)
 
     files = []  # (task, filename, in_len, nchars, truncated)

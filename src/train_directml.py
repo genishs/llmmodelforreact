@@ -141,6 +141,141 @@ def stream_load_to_device(model_path, device, dtype):
     return model
 
 
+def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64, skip=("lm_head",)):
+    """bf16 원본 체크포인트에서 HQQ 4bit로 즉석 양자화(on-the-fly) 로드 — **레이어 단위 스트리밍**.
+
+    bitsandbytes(gfx1151 wave32/wave64 커널 불일치로 GPU wedge 원인, 2026-07-14 확정)를
+    전혀 쓰지 않는 경로. HQQ는 커스텀 HIP 커널이 없고 backward가 dequant+평범한 matmul
+    (torchao/HQQ 게이트 테스트 통과, scripts/test_nf4_backward_gate.py)이라 안전하다.
+
+    ★ 2026-07-15 발견: transformers 5.13.1의 `HqqConfig` + `from_pretrained(quantization_config=...)`
+    자동경로는 깨져 있다 — `transformers/quantizers/base.py:289 get_quantize_ops()`가 최근 리팩터로
+    추상 인터페이스가 됐는데 `quantizer_hqq.py`가 아직 구현을 안 해서 즉시
+    `NotImplementedError: QuantizationMethod.HQQ is not available yet` 로 실패한다(실측 확인).
+    → transformers 통합을 완전히 우회하고, PASS한 게이트 테스트(test_nf4_backward_gate.py)와
+    동일하게 `HQQLinear(linear_layer, quant_config, ...)`를 직접 호출해 각 nn.Linear를
+    수동으로 치환한다(peft의 dispatch_hqq는 타입만 보고 HQQLinear면 인식하므로 문제 없음).
+
+    ★★ 2026-07-15 저녁 재설계(중요): 이전 버전은 `stream_load_to_device`로 **bf16 전체를
+    먼저 device에 통째로 적재한 뒤** Linear를 순회 양자화했다. 14B(bf16 28GB)는 이 장비
+    (통합메모리 ~53GB) 안에서 우연히 맞았을 뿐, **32B(bf16 ~65GB)는 이 방식으로는 애초에
+    적재 자체가 불가능**하다(양자화 시작 전에 이미 총 RAM을 넘김 — OOM/wedge 확정, 32B HQQ
+    본런 착수 직전에 발견해 수정함). 그래서 이 함수는 이제:
+      1) 메타(무가중치) 모델을 만들고 양자화 대상 Linear 목록만 먼저 수집한다.
+      2) 비양자화 텐서(embedding/norm/lm_head 등 skip)는 기존처럼 텐서 1개씩 device로 스트리밍.
+      3) 양자화 대상 Linear는 **레이어 1개(weight+bias)만** bf16으로 device에 올려 즉시
+         HQQLinear로 양자화(del_orig=True로 bf16 원본 즉시 해제) → 다음 레이어로.
+    peak 메모리 = (이미 양자화된 레이어들의 4bit 합) + (현재 레이어 1개의 bf16) 뿐이라
+    모델 전체 크기와 무관하게 안전하다(32B도 이 경로로 적재 가능해짐).
+
+    HQQBackend.PYTORCH는 ROCm에서 유일하게 지원되는 백엔드(ATEN은 CUDA 전용)이므로
+    명시적으로 고정한다.
+    """
+    import gc
+    from hqq.core.quantize import HQQLinear, BaseQuantizeConfig, HQQBackend
+    HQQLinear.set_backend(HQQBackend.PYTORCH)  # ROCm: ATEN 불가, PYTORCH(순수 dequant+matmul)만 지원
+
+    cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(cfg, torch_dtype=compute_dtype)
+    model.tie_weights()
+
+    # 텐서 → shard 매핑 (stream_load_to_device와 동일한 규칙)
+    idx = os.path.join(model_path, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        with open(idx, "r", encoding="utf-8") as f:
+            wmap = json.load(f)["weight_map"]
+        shard_of = {n: os.path.join(model_path, s) for n, s in wmap.items()}
+    else:
+        shard = sorted(glob.glob(os.path.join(model_path, "*.safetensors")))[0]
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            shard_of = {n: shard for n in f.keys()}
+
+    qcfg_template = BaseQuantizeConfig(nbits=nbits, group_size=group_size, axis=1)
+
+    # 1) 양자화 대상 Linear 수집(메타 트리 순회 — 아직 가중치 없음, 구조/shape만 필요).
+    targets = []  # (parent_module, attr_name, child_module, dotted_name)
+    quant_tensor_names = set()
+
+    def _collect(module, prefix=""):
+        for name, child in list(module.named_children()):
+            full = f"{prefix}.{name}" if prefix else name
+            if isinstance(child, torch.nn.Linear) and not any(s in full for s in skip):
+                targets.append((module, name, child, full))
+                quant_tensor_names.add(f"{full}.weight")
+                if f"{full}.bias" in shard_of:
+                    quant_tensor_names.add(f"{full}.bias")
+            else:
+                _collect(child, full)
+
+    _collect(model)
+    log(f"  HQQ 스트리밍 로드: 양자화대상 Linear {len(targets)}개, "
+        f"비양자화 텐서 {len(shard_of) - len(quant_tensor_names)}개 (nbits={nbits} group_size={group_size})")
+
+    # 2) 비양자화 텐서(embedding/norm/skip Linear 등)는 기존처럼 텐서 1개씩 device로 스트리밍.
+    t0 = time.time()
+    loaded = 0
+    for name, shard in shard_of.items():
+        if name in quant_tensor_names:
+            continue
+        if ram_avail_gb() < RAM_GUARD_GB:
+            raise MemoryError(
+                f"가용 RAM {ram_avail_gb():.2f}GB < {RAM_GUARD_GB}GB 가드. "
+                f"다른 앱을 닫고 재시도하세요(스왑 프리징 방지)."
+            )
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            t = f.get_tensor(name).to(compute_dtype)
+        set_module_tensor_to_device(model, name, device, value=t)
+        del t
+        loaded += 1
+        if loaded % 50 == 0:
+            gc.collect()
+    log(f"  비양자화 텐서 {loaded}개 적재 완료 ({time.time()-t0:.1f}s, RAM 가용 {ram_avail_gb():.1f}GB)")
+
+    # 3) 양자화 대상 Linear: 레이어 1개(weight[+bias])만 bf16으로 device에 올려 즉시 HQQ 양자화.
+    #    → 어느 시점에도 "전체 모델의 bf16 사본"이 존재하지 않는다(32B도 안전).
+    n_quant = 0
+    for module, attr, child, full in targets:
+        if ram_avail_gb() < RAM_GUARD_GB:
+            raise MemoryError(
+                f"가용 RAM {ram_avail_gb():.2f}GB < {RAM_GUARD_GB}GB 가드(HQQ 양자화 중, {full})."
+            )
+        with safe_open(shard_of[f"{full}.weight"], framework="pt", device="cpu") as f:
+            w = f.get_tensor(f"{full}.weight").to(compute_dtype)
+        has_bias = f"{full}.bias" in quant_tensor_names
+        shell = torch.nn.Linear(child.in_features, child.out_features, bias=has_bias,
+                                 device=device, dtype=compute_dtype)
+        shell.weight.data.copy_(w.to(device))
+        del w
+        if has_bias:
+            with safe_open(shard_of[f"{full}.bias"], framework="pt", device="cpu") as f:
+                b = f.get_tensor(f"{full}.bias").to(compute_dtype)
+            shell.bias.data.copy_(b.to(device))
+            del b
+        hqq_layer = HQQLinear(shell, quant_config=qcfg_template, compute_dtype=compute_dtype,
+                               device=str(device), del_orig=True)
+        setattr(module, attr, hqq_layer)
+        n_quant += 1
+        if n_quant % 20 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+            log(f"  {n_quant}/{len(targets)} Linear 양자화 완료 | RAM 가용 {ram_avail_gb():.1f}GB")
+    torch.cuda.empty_cache()
+    log(f"  HQQ 스트리밍 치환 완료: Linear {n_quant}개 → HQQLinear(4bit), 총 {time.time()-t0:.1f}s")
+
+    model.tie_weights()
+    remaining = [n for n, p in model.named_parameters() if p.is_meta]
+    if remaining:
+        raise RuntimeError(f"적재 안 된 meta 텐서 {len(remaining)}개: {remaining[:5]}")
+
+    # transformers 자동경로를 안 탔으므로 model.quantization_method가 안 설정됨.
+    # peft.prepare_model_for_kbit_training이 이 플래그로 hqq 분기(grad-ckpt hook,
+    # fp32 업캐스트 제외 등)를 타므로 수동으로 세팅해준다.
+    model.quantization_method = "hqq"
+    model.hqq_quantized = True
+    return model
+
+
 def load_prequantized_4bit(model_path, compute_dtype, attn_impl=None):
     """사전양자화(bnb nf4) 체크포인트 로드 — 32B 4bit용.
 
@@ -165,19 +300,28 @@ def load_prequantized_4bit(model_path, compute_dtype, attn_impl=None):
     return model
 
 
-def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_impl=None):
-    log(f"모델 로드: {model_path} (dtype={dtype}{', 4bit-prequant' if load_4bit else ''})")
+def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_impl=None,
+          quant="none", hqq_nbits=4, hqq_group_size=64):
+    log(f"모델 로드: {model_path} (dtype={dtype}"
+        + (', 4bit-prequant(bnb)' if load_4bit else '')
+        + (f', hqq-{hqq_nbits}bit-onthefly' if quant == "hqq" else '') + ")")
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    if load_4bit:
+    kbit = load_4bit or (quant == "hqq")
+    if quant == "hqq":
+        model = load_hqq_onthefly(model_path, device, dtype,
+                                   nbits=hqq_nbits, group_size=hqq_group_size)
+    elif load_4bit:
         model = load_prequantized_4bit(model_path, dtype, attn_impl=attn_impl)
+    else:
+        model = stream_load_to_device(model_path, device, dtype)
+
+    if kbit:
         from peft import prepare_model_for_kbit_training
         model = prepare_model_for_kbit_training(
             model, use_gradient_checkpointing=grad_ckpt)
-    else:
-        model = stream_load_to_device(model_path, device, dtype)
 
     lc = config["lora"]
     lora_config = LoraConfig(
@@ -187,14 +331,14 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
         lora_dropout=lc["lora_dropout"], bias=lc["bias"],
     )
     model = get_peft_model(model, lora_config)
-    if not load_4bit:
-        model = model.to(device)  # LoRA 신규 파라미터를 디바이스로 (4bit는 이미 device_map으로 GPU에 있고 .to() 불가)
+    if not kbit:
+        model = model.to(device)  # LoRA 신규 파라미터를 디바이스로 (4bit/hqq는 이미 device_map으로 GPU에 있고 .to() 불가)
     model.config.use_cache = False
 
     # gradient checkpointing: DirectML에서는 재계산이 캐싱 할당자에 버퍼를 더 쌓아
     # 오히려 VRAM 증가를 가속 → 기본 비활성.
-    # 4bit 경로는 prepare_model_for_kbit_training이 이미 grad-ckpt를 처리하므로 재적용 안 함.
-    if grad_ckpt and not load_4bit:
+    # kbit(4bit/hqq) 경로는 prepare_model_for_kbit_training이 이미 grad-ckpt를 처리하므로 재적용 안 함.
+    if grad_ckpt and not kbit:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
 
@@ -254,7 +398,16 @@ def main():
     ap.add_argument("--attn-eager", action="store_true",
                     help="gfx1151 backward 웨지 회피(2026-07-14 발견): 실험적 mem-efficient SDPA 대신 "
                          "eager(math) 어텐션 사용 + SDP flash/mem-efficient 백엔드 비활성. 4bit smoke 실패 시 #1 시도.")
+    ap.add_argument("--quant", choices=["none", "hqq"], default="none",
+                    help="none=기존(bf16 stream 또는 --load-4bit bnb). "
+                         "hqq=bitsandbytes 미사용, bf16 원본에서 HQQ 4bit 즉석 양자화(2026-07-15, gate 통과 경로). "
+                         "bf16 원본이 디스크에 있는 모델에만 적용 가능(32B는 bnb-prequant뿐이라 불가).")
+    ap.add_argument("--hqq-nbits", type=int, default=4, help="HQQ 비트수(기본 4)")
+    ap.add_argument("--hqq-group-size", type=int, default=64, help="HQQ group_size(기본 64)")
     args = ap.parse_args()
+
+    if args.quant == "hqq" and args.load_4bit:
+        raise SystemExit("--quant hqq와 --load-4bit(bnb)는 동시 사용 불가(서로 다른 4bit 포맷).")
 
     if args.attn_eager:
         # 실험적 AMD SDPA 커널을 backward에서 배제(gfx1151 launch-failure 회피).
@@ -302,7 +455,9 @@ def main():
 
     model, tok = build(model_path, device, config, dtype, args.grad_ckpt,
                        load_4bit=args.load_4bit,
-                       attn_impl=("eager" if args.attn_eager else None))
+                       attn_impl=("eager" if args.attn_eager else None),
+                       quant=args.quant, hqq_nbits=args.hqq_nbits,
+                       hqq_group_size=args.hqq_group_size)
 
     bs = tcfg["per_device_train_batch_size"]
     accum = tcfg["gradient_accumulation_steps"]

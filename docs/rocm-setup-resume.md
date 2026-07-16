@@ -1,14 +1,67 @@
 # ROCm 학습환경 셋업 — 진행상황 & 재개 가이드 (halo-ubuntu-pm)
 
-> 작성 2026-07-12 (halo 장비, **Ubuntu 26.04 Linux** 세션). 자리 이동으로 shutdown 예정.
-> **목적**: 재부팅 후 이 지점부터 무손실 재개.
-> **이 파일은 NTFS 레포(D:)에 있어 Windows에서도 읽힘** → Windows 쪽 halo-pm도 진행상황 확인 가능.
-> 별칭 확정: 이 Linux 개발팀 = **halo-ubuntu-pm** (Windows측 `halo-pm`, 상대 장비 `shas-pm`과 구분).
+> 작성 2026-07-12, **최종 갱신 2026-07-16 06:00** (halo, Ubuntu 26.04 + ROCm gfx1151).
+> **목적**: 이 지점부터 무손실 재개. NTFS 레포라 Windows에서도 읽힘.
 
 ## 상태 요약 (한 줄)
-Ubuntu 26.04 + ROCm(gfx1151). **bf16 트랙 견고**(7B/14B 본런 완료, 14B=60.0% banked). **32B 4bit QLoRA 학습은 이 gfx1151/bnb-ROCm 빌드에서 비실용 결론**(2026-07-15): 기본 SDPA backward=GPU 웨지, eager backward=8~21분에도 1 step 미완(unusably slow). 70B 미시도. **최고 banked = 14B bf16 60.0%.**
+**32B 4bit(HQQ) QLoRA 학습 완주 — 어제(07-15)의 "비실용" 판정은 뒤집혔다.** 벽은 하드웨어가 아니라 **bitsandbytes 커널 하나**였다. 다만 **채점(평가)이 새 병목**(7.2h/회)이고, **채점 하니스 자체가 신뢰 불가**(seed 분산 ±20pp)로 밝혀져 **점수 해석은 전면 보류** 상태다.
 
-## ⛔⛔ 32B 4bit QLoRA 최종 판정 = 비실용 (2026-07-15 00:30, autonomous-operator) — ★★핵심 결론
+---
+
+# ★★★ 2026-07-16 세션 — 읽어야 할 3가지
+
+## ① 32B 4bit 학습 = **가능하다** (어제 판정 뒤집힘)
+```
+[03:21:21] 종료: 78 steps, 총 15607.1s, 평균 194.4s/step | val_loss 0.5257→0.4868
+[03:21:22] [본런 완료] 저장: models/qwen-react-lora-32b-hqq (896텐서, 512MB)
+웨지/Traceback/OOM 0건 | GPU 21.4GB (상한 ~50GB의 43%)
+```
+- **모델**: Qwen2.5-Coder-32B **bf16 원본**(65GB, HF에서 다운로드) → 스트리밍 적재 → **in-place HQQ 4bit 양자화**(448 Linear) → LoRA r16 qkvo+MLP, seq1024, grad-ckpt, 2epoch.
+- **명령**: `scripts/gpu_job.sh --name train32b2 --timeout 18000 -- python src/train_directml.py --backend cuda --dtype bf16 --base ./models/base/qwen2.5-coder-32b --quant hqq --hqq-nbits 4 --hqq-group-size 64 --lora-r 16 --lora-mlp --grad-ckpt --seq 1024 --epochs 2 --out ./models/qwen-react-lora-32b-hqq`
+- **★70B 전망**: 32B가 **21.4GB**밖에 안 썼다. 70B nf4 추정 ≈39GB(가중치 36.5 + LoRA 0.25 + 옵티마 0.5 + grad 0.25 + 활성값 1.5) → **상한 ~50GB 안쪽. 메모리는 들어온다.**
+
+## ② 근본원인: **bitsandbytes가 gfx1151에서 깨져 있었다** (하드웨어 무관)
+- **bnb**는 wavefront 크기에 의존하는 **수제 HIP 커널**을 쓴다. `__AMDGCN_WAVEFRONT_SIZE`가 **ROCm 7.13 clang에서 미정의** → `WARP_SIZE`가 **64로 폴백**. 그런데 **gfx1151은 wave32** → OOB 메모리 접근 → `hipErrorLaunchFailure` → GPU 웨지.
+- **HQQ/torchao**는 backward가 `dequant + 평범한 matmul`이고 **자체 4bit 커널이 없다** → bf16이 증명한 표준 ATen 경로를 그대로 탄다. **게이트 실측: torchao PASS(2.7s) / HQQ PASS(3.0s), 웨지 0.** (`scripts/test_nf4_backward_gate.py`)
+- **HQQ를 택한 이유**: `peft/tuners/lora/hqq.py`가 존재 → transformers+peft에 drop-in. torchao NF4는 peft에 참조 0건 → 커스텀 배선 필요.
+- **함정**: transformers 5.13.1의 `HqqConfig` 자동경로는 **파손**(`quantizers/base.py:289 get_quantize_ops()` 추상 미구현 → `NotImplementedError`). → `HQQLinear`로 **수동 치환**(`src/train_directml.py: load_hqq_onthefly()`).
+- **`HQQBackend.PYTORCH` 필수** (ATEN은 CUDA 전용).
+- **하드웨어 손상 우려는 근거 없음**: `device wedged, but recovered through reset`는 **설계된 복구 경로**(TDR 등가), 펌웨어 매개 소프트 리셋이며 전원 레일을 끊지 않는다. Gemini 3.1 Pro·아키텍트·PM 3자 독립 수렴. 실손해는 세션/데이터지 실리콘이 아니다.
+
+## ③ ★ 새 병목 = **평가**, 그리고 **저울이 고장나 있다**
+- **채점 속도 = 0.36 tok/s** (HQQ 4bit batch=1 디코드, 4태스크 독립 측정). 토큰마다 **17GB 전체를 dequant**해야 해서 배치 이득 0. **구조적 특성, 버그 아님.**
+  → **heldout7 채점 1회 = 7.2시간** (학습 3.7h보다 길다!). `medit` 하나가 4096토큰 = **3.2시간**.
+  → **∴ "32B가 7B보다 나은가"는 이 인프라로 답할 수 없다** (seed 반복이 불가능하므로).
+- **채점 하니스 신뢰 불가 (shas-pm 실측)**:
+  - **seed 분산 Δ20.0pp** — 동일 데이터·설정에서 seed만 42→1234로 바꾸니 88.6% → 68.6%.
+  - **채점기 아티팩트** — r6base의 medit 0.80은 소스의 **안 닫힌 백틱 하나**가 이후 코드를 통째로 문자열로 삼켜 에러 검출을 줄인 결과. 닫으면 **0.40**. `score=max(0,1-err/5)`가 **구문 붕괴 구간에서 품질과 역상관**.
+  - **충실도 미측정** — `return <div/>` 한 줄로 만점 가능(타당도 결함, 표본을 늘려도 안 잡힘).
+- **∴ 지금까지의 모든 점수 차이(cap +17.2pp, r6admin −14.3pp, egovreal −8.6pp)가 노이즈(±20pp) 안**이다.
+
+## 🔻 철회: **"레버(데이터) > 크기·정밀도"**
+이 프로젝트의 중심 명제였으나 **근거가 없다.** 근거였던 14b-v1(62.9%) vs 14b-rocm(60.0%) "제자리"는 **2.9pp** — 노이즈 바닥 **20.0pp** 한참 안쪽이라 **애초에 해석 불가**였다. halo가 이 명제를 shas에 전파했고 shas가 "독립 확증"으로 받아 **둘이 같은 착각을 상호 강화**했다. 함께 취소: *"14B의 벽은 구조적(attachfile 타입오류·medit 잘림)"* — medit 판정 자체가 백틱 아티팩트로 오염됐을 수 있음.
+
+## 🖐️ 미결 — 두목 결재 대기
+1. **하니스 v2**: `docs/decision-harness-v2-ko.md` — **두 PM 공동 권고 A**("모델 개선을 며칠 멈추고 저울부터 고친다"). 재채점은 GPU 0(생성물 아카이브만으로).
+2. **32B 채점 미완**: 생성물 **4/7**(select·gallery·about-org·attachfile) 보존. 어댑터(512MB) 보존. 두목 지시로 **07-16 05:41 채점 중단**. 재개 시 어댑터로 이어서 채점 가능하고, 오프라인 채점(`scripts/score_saved_dml.py`, **GPU 0, 2분**)으로 partial 점수 산출 가능(단 4개 중 3개가 정보량 0).
+
+## ⚠️ 하네스 사용법 (오늘 밤 런을 두 번 죽일 뻔한 함정)
+- **모든 GPU 잡은 `scripts/gpu_job.sh --name <n> --timeout <sec> -- <cmd>`** (systemd-run --user detach; 웨지/GNOME 사망/로그아웃에도 잡·로그 생존. `Linger=yes` 이미 켜짐).
+- **`--timeout` 반드시 명시.** 기본 `RuntimeMaxSec=3600`(1h)이 **5.6시간짜리 32B 본런을 정확히 +3600초에 SIGINT로 죽였다**(2시간 유실). 실행 중 transient 유닛의 타임아웃은 **사후 연장 불가**(실측) → 재발사만이 유일.
+- **`--setenv KEY=VAL`**: 유닛은 호출자 셸에서 fork되지 않아 export가 전파 안 됨.
+- **`HSA_OVERRIDE_GFX_VERSION`은 절대 설정 금지**(빈 값이어도 cuda 불가용).
+- **AOTriton 미측정 카드**: 로그에 `Mem Efficient attention ... Enable it with TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`. mem-efficient는 CK가 아니라 **AOTriton 경로로 실재**하며 환경변수 하나로 열린다. **미측정** — 다음 세션 저비용 카드.
+
+---
+
+## ~~⛔⛔ 32B 4bit QLoRA 최종 판정 = 비실용~~ → **❌ 이 판정은 2026-07-16에 반증됨. 아래는 역사 기록용.**
+
+> **⚠️ 이 섹션의 결론은 틀렸다.** 32B 4bit 학습은 **가능하다**(07-16 실측: 78스텝 완주, 194.4s/step).
+> 아래 관측(웨지·저속) 자체는 사실이나 **원인 귀속이 틀렸다** — "gfx1151이 4bit 학습을 못 한다"가 아니라
+> **"bitsandbytes가 gfx1151(wave32)에서 깨져 있다"** 였다. bnb를 버리고 **HQQ**를 쓰면 즉시 열린다.
+> 상세는 문서 상단 「2026-07-16 세션」 참조. **이 섹션을 근거로 의사결정하지 말 것.**
+
+### (역사) 원래 판정 — 2026-07-15 00:30, autonomous-operator
 재부팅으로 GPU 복구(cuda True, GTT 60.1GB) 후 backward 웨지 픽스(`--attn-eager`)를 실측 검증. **두 변형 모두 backward 1 step 완주 실패**:
 | # | 설정 | 결과 | GPU |
 |---|---|---|---|
