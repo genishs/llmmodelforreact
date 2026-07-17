@@ -36,7 +36,18 @@ BASE = str(ROOT / "models" / "base" / "qwen2.5-coder-7b")
 
 def _resolve_egov():
     """egov 실파일 소스 루트. 장비마다 sibling 체크아웃 위치가 달라 후보 탐색 + $EGOV_SRC 오버라이드.
-    Linux(ROCm 8060) sibling: .../twinspace_platform/egovGeoportal/src, Windows 원본: d:/..."""
+    Linux(ROCm 8060) sibling: .../twinspace_platform/egovGeoportal/src, Windows 원본: d:/...
+
+    ⚠ CANONICAL TREE — 8060 박스에는 egov 소스 트리가 ≥3개 존재한다:
+      - twinspace_platform/egovGeoportal/src  ← 정본(84 jsx). eval이 실제로 쓰는 트리.
+      - study/egovframe-template-simple-react/src  ← 다른 템플릿(77 jsx). eval 미사용. 절대 아님.
+      - twinspace_platform/egovGeoportal/node_modules/egovframe-template-simple-react ← 패키지 사본, 무관.
+    잘못된 트리를 잡으면 실제로 존재하는 파일을 "없다"고 오탐하거나(또는 그 반대) apples-to-oranges
+    스코어링이 나온다(2026-07-16/17 겪은 실제 사고). 양 노드가 반드시 같은 트리를 보도록
+    EGOV_SRC 를 명시적으로 export 하는 걸 강력 권장:
+      export EGOV_SRC="/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"  (Linux/8060)
+      set EGOV_SRC=d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src                              (Windows)
+    """
     import os
     cands = []
     if os.environ.get("EGOV_SRC"):
@@ -46,10 +57,38 @@ def _resolve_egov():
         Path("/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"),
         Path("d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src"),
     ]
+    resolved = None
     for c in cands:
         if c.exists():
-            return c
-    return cands[0]
+            resolved = c
+            break
+    if resolved is None:
+        resolved = cands[0]
+    print(f"[_resolve_egov] EGOV tree resolved -> {resolved}", flush=True)
+
+    # 앵커 무결성 가드: heldout7(7개, HELDOUT_TASKS와 동기화 유지)이 이 트리에 실제로 있는지 확인.
+    # 이 함수는 모듈 로드 시점에 HELDOUT_TASKS보다 먼저 호출되므로 경로를 하드코딩한다.
+    # 잘못된(또는 불완전한) 트리를 조용히 쓰다가 apples-to-oranges 스코어링을 내는 대신 즉시 fail.
+    _heldout7_anchors = [
+        "components/EgovSelect.jsx",
+        "components/EgovImageGallery.jsx",
+        "pages/about/EgovAboutOrganization.jsx",
+        "components/EgovAttachFile.jsx",
+        "pages/admin/dataaccess/EgovAdminDataAccessEdit.jsx",
+        "pages/admin/members/EgovAdminMemberList.jsx",
+        "pages/admin/members/EgovAdminMemberEdit.jsx",
+    ]
+    missing = [a for a in _heldout7_anchors if not (resolved / a).exists()]
+    if missing:
+        raise FileNotFoundError(
+            "EGOV_SRC 해석 실패 — heldout7 앵커 파일이 없는 트리로 잡혔습니다 "
+            "(잘못된 트리로 인한 오탐 스코어링을 막기 위해 즉시 중단합니다).\n"
+            f"  resolved egov = {resolved}\n"
+            f"  missing anchors ({len(missing)}/{len(_heldout7_anchors)}): {missing}\n"
+            "  → EGOV_SRC 환경변수로 정본 트리를 명시적으로 지정하세요, 예:\n"
+            '     export EGOV_SRC="/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"'
+        )
+    return resolved
 
 
 EGOV = _resolve_egov()

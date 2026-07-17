@@ -24,3 +24,18 @@
 
 ## 규칙
 - append-only. 기존 줄 수정·삭제 금지(정정은 새 줄 + from-*.md에 사유).
+
+## ⚠ 정본 egov 소스 트리 (2026-07-17 추가 — 잘못된 트리 사고 재발 방지)
+8060 박스에는 egov 소스 트리가 **≥3개** 존재하는데(다른 템플릿, node_modules 사본 포함),
+`scripts/eval_hard_tsc.py:_resolve_egov()` 가 실제로 채점에 쓰는 건 **딱 하나**뿐이다.
+잘못된 트리로 채점하면 apples-to-oranges 오탐이 난다(실제로 겪은 사고).
+
+- **정본**: `<workspace>/twinspace_platform/egovGeoportal/src` (84 jsx, heldout7 앵커 전부 존재)
+- **아님**: `<workspace>/study/egovframe-template-simple-react/src` (다른 템플릿, 77 jsx — eval 미사용)
+- 두 노드 모두 `EGOV_SRC` 환경변수를 **명시적으로 export** 하는 걸 강력 권장:
+  ```bash
+  export EGOV_SRC="/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"   # Linux/8060
+  set EGOV_SRC=d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src                              # Windows/4060
+  ```
+- `_resolve_egov()`는 이제 (1) 어느 트리로 잡혔는지 항상 print하고, (2) heldout7 앵커 7개 중
+  하나라도 없으면 **즉시 FileNotFoundError로 중단**한다(잘못된/불완전한 트리로 조용히 채점하는 것 방지).
