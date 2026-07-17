@@ -1,0 +1,72 @@
+{
+  "_meta": {
+    "note": "PROPOSAL — 양노드 합의 대기. eval_hard_tsc.py/score_v2.py 미변경. 합의 후 scripts/tasksets_v2.json 로 승격.",
+    "author": "system-architect (앜선생), 4060 node",
+    "date": "2026-07-17",
+    "instr_ts_conv": "이 React 컴포넌트를 TypeScript(.tsx)로 변환해줘. props 타입을 interface로 정의하고 모든 함수/상태에 타입을 붙여줘. 코드만 출력해.",
+    "decontam": "14 real-file 오염 제외(명시10 + EgovAdminAppStatList[리네임위장] + EgovAdminNoticeDetail + EgovAdminPasswordUpdate + egovFetch). 전 태스크 name+content-hash 이중검증 통과.",
+    "egov_root_env": "EGOV_SRC (미설정 시 eval_hard_tsc._resolve_egov 후보경로)"
+  },
+  "tasksets": {
+    "heldout7": {
+      "role": "anchor", "in_mean": true, "milestone_only": false,
+      "note": "★불변 앵커 — 절대 재선정 금지. 과거 r6base/14b 측정과 크로스워크 기준.",
+      "tasks": {
+        "ho-select":      "components/EgovSelect.jsx",
+        "ho-gallery":     "components/EgovImageGallery.jsx",
+        "ho-about-org":   "pages/about/EgovAboutOrganization.jsx",
+        "ho-attachfile":  "components/EgovAttachFile.jsx",
+        "ho-admin-dae":   "pages/admin/dataaccess/EgovAdminDataAccessEdit.jsx",
+        "ho-admin-mlist": "pages/admin/members/EgovAdminMemberList.jsx",
+        "ho-admin-medit": "pages/admin/members/EgovAdminMemberEdit.jsx"
+      }
+    },
+    "core16": {
+      "role": "primary", "in_mean": true, "milestone_only": false,
+      "note": "신규 1차지표. 9도메인 층화(도메인당 ≤3), 2-5/5-10KB 위주(14/16), 10-20KB 소수(2/16), >20KB 제외.",
+      "tasks": {
+        "co-admin-galdetail":  "pages/admin/gallery/EgovAdminGalleryDetail.jsx",
+        "co-admin-boardlist":  "pages/admin/board/EgovAdminBoardList.jsx",
+        "co-inform-daily":     "pages/inform/daily/EgovDailyDetail.jsx",
+        "co-inform-notlist":   "pages/inform/notice/EgovNoticeList.jsx",
+        "co-inform-galedit":   "pages/inform/gallery/EgovGalleryEdit.jsx",
+        "co-support-dldetail": "pages/support/download/EgovDownloadDetail.jsx",
+        "co-support-qnalist":  "pages/support/qna/EgovQnaList.jsx",
+        "co-support-qnadetail":"pages/support/qna/EgovQnaDetail.jsx",
+        "co-comp-paging":      "components/EgovPaging.jsx",
+        "co-comp-container":   "components/EgovContainer.jsx",
+        "co-main-banners":     "pages/main/EgovMainBanners.jsx",
+        "co-main-home":        "pages/main/EgovMain.jsx",
+        "co-about-loc":        "pages/about/EgovAboutLocation.jsx",
+        "co-intro-service":    "pages/intro/EgovIntroService.jsx",
+        "co-login-content":    "pages/login/EgovLoginContent.jsx",
+        "co-mypage-edit":      "pages/mypage/EgovMypageEdit.jsx"
+      }
+    },
+    "canary4": {
+      "role": "canary", "in_mean": false, "milestone_only": false,
+      "note": "천장 인지 사용. 평균 제외. 값이 떨어지면 = 회귀/파국 경보(디코드·프롬프트·환경 문제).",
+      "tasks": {
+        "ca-footer":        "components/EgovFooter.jsx",
+        "ca-radiogroup":    "components/EgovRadioButtonGroup.jsx",
+        "ca-about-hist":    "pages/about/EgovAboutHistory.jsx",
+        "ca-support-apply": "pages/support/apply/EgovSupportApply.jsx"
+      }
+    },
+    "xl3": {
+      "role": "milestone", "in_mean": false, "milestone_only": true,
+      "note": "장문 스트레스. 별도 지표, 마일스톤 전용. medit는 heldout7 앵커와 동일 파일(재사용).",
+      "tasks": {
+        "xl-comp-header":     "components/EgovHeader.jsx",
+        "xl-admin-schededit": "pages/admin/schedule/EgovAdminScheduleEdit.jsx",
+        "xl-admin-medit":     "pages/admin/members/EgovAdminMemberEdit.jsx"
+      }
+    }
+  },
+  "views": {
+    "core20": {
+      "note": "리포트타임 UNION 뷰(별도 아카이브 아님) — '구7↔신20' 내러티브용. core16 ∪ heldout7 4개(≤10KB, 앵커에서 차용). 앵커 무결성 유지 위해 medit/dae 제외.",
+      "compose": ["core16", "heldout7:ho-select", "heldout7:ho-gallery", "heldout7:ho-about-org", "heldout7:ho-admin-mlist"]
+    }
+  }
+}
