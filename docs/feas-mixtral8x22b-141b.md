@@ -98,28 +98,52 @@ torch 2.10과 import 호환. 1차 시도에서 바로 COMPATIBLE → 추가 하�
 [23:31:23]   20/1624 Linear 양자화 완료 | RAM 가용 52.5GB   ← 크래시 없이 진행
 ```
 
-## 6. 가능성 런 계측
+## 6. 첫 학습 스텝 크래시 → device 버그 규명·수정 (해결됨)
+
+로드는 성공했으나 첫 forward에서 크래시:
+```
+RuntimeError: indices should be either on cpu or on the same device as the indexed tensor (cpu)
+  apply_rotary_pos_emb: cos = cos[position_ids]   (modeling_mixtral.py:245)
+```
+**원인 확정(scripts/buf_check 실측, 재로드 없이):** `init_empty_weights` 빈 모델의 버퍼 **168개**
+(56레이어 × `rotary_emb.inv_freq`/`cos_cached`/`sin_cached`)가 **전부 CPU**. 이들은 non-persistent
+버퍼라 state_dict에 없어 `load_hqq_onthefly`의 스트리밍 루프(state_dict 텐서만 device 이동)가 건드리지
+않음 → CPU 잔류 → forward에서 GPU 활성값과 device 불일치. 로더의 meta 검사는 `named_parameters()`만
+보고 버퍼를 놓쳤음. dense(123B)에선 rotary 인덱싱이 이 조합으로 안 걸렸음(Mixtral 첫 노출).
+
+**수정(커밋 `0d3fb4a`):** `load_hqq_onthefly` 끝에 모든 non-meta 버퍼를 device로 이동 + meta 버퍼 경고.
++ 자동체인 판정 grep 버그(`|| echo 0`가 `0\n0` 생성) 교정.
+
+## 7. 계측 (정지 전까지 실측)
 
 | 지표 | 값 |
 |---|---|
-| 로드 성공 | 진행 중 (1624 Linear 스트리밍 양자화, 크래시 없음) — _확정치 추후_ |
-| 스트리밍 HQQ 양자화 소요 | _추후_ |
-| GTT 피크 (card1 `mem_info_gtt_used`) | _추후 (계측 로그 `mem_watch_mixtral.log`)_ |
-| 스텝 실제 진행 (smoke 8) | _추후_ |
-| step당 시간 | _추후_ |
-| loss (첫/끝) | _추후_ |
-| 총 소요 | _추후_ |
+| 로드 성공 | ✅ 1624 Linear HQQ2bit 양자화 완료(어텐션 224 + 전문가 1344 + 라우터 56) |
+| 스트리밍 양자화 소요 | ~46분 |
+| **GTT 피크 (card1)** | **44.2 GiB < 56 캡 (여유 12GiB)** — 141B 메모리 통과 실증 |
+| 스왑 | 62G 여유 유지, SwapFree 붕괴 없음 |
+| LoRA | 34.8M (0.098%, 어텐션-온리 q/k/v/o_proj) 부착 |
+| 학습 스텝 | ⏸️ 첫 스텝 device 크래시 → 수정(`0d3fb4a`) 후 재검증은 **다음 세션**(두목 중단) |
+| loss | 미측정 |
 
-## 7. 결론
+## 8. 결론
 
-_로드 완료 + 8스텝 진행 확인 시 확정._ 현재까지: **구조 비호환은 격리 venv(transformers 4.46.3)로
-해소됐고, 141B가 HQQ 2bit로 실제 로드 진행 중**(1차 크래시 지점 통과).
+- **141B가 이 gfx1151/64GB 장비 메모리에 들어감은 실증됨** (GTT 44.2GiB < 56캡). 벽은 하드웨어가 아님.
+- transformers 구조 비호환 → **격리 venv 4.46.3**로 해결(체크포인트 키 100% 매칭).
+- 첫 스텝 device 버그 → **원인 규명·수정 완료**(`0d3fb4a`). 검증 smoke는 두목 중단으로 미완.
+- 종합: **"141B 로드 실증 + device 수정 준비 완료", 스텝 검증·풀학습은 다음 세션.**
 
-## 8. 교훈 / 후속 함의
+## 9. 다음 세션 To-Do
 
-- **천장 싸움이 메모리 → 소프트웨어 스택 호환성으로 이동.** 하드웨어(gfx1151 통합메모리)는 141B급도 담을 여력 재확인.
-- HQQ 스트리밍 로더는 **dense/구조식-MoE 전용**. 향후 MoE(Mixtral/DeepSeek/Qwen-MoE) 대응하려면 **버전 핀** 또는 **로더의 융합-전문가 지원**이 필요.
-- **재현성:** transformers 5.x는 MoE 표현을 적극 리팩터링 중 → 대형 MoE 체크포인트 로드 시 "체크포인트 포맷 ↔ 라이브러리 구조" 정합을 매번 확인. **Mixtral 전용 핀 = transformers 4.46.3 @ `~/.venvs/ai_model_mixtral`.**
+1. `0d3fb4a` 수정본으로 smoke 재검증(`--smoke 8`): 버퍼 이동으로 rotary device 통과 확인.
+2. smoke 성공 시 → 풀학습 발사(`scripts/chain_mixtral8x22b_full.sh`, 에폭 지정) → 141B 어댑터 산출.
+3. 격리 venv `~/.venvs/ai_model_mixtral`(4.46.3), 어텐션-온리, seq512, 스왑 64G 선행조건.
+
+## 10. 교훈 / 후속 함의
+
+- **천장 싸움이 메모리 → 소프트웨어 스택 호환성으로 이동.** 하드웨어(gfx1151 통합메모리)는 141B급도 담을 여력 실증.
+- HQQ 스트리밍 로더는 **dense/구조식-MoE 전용**. MoE 대응 시 (a) 버전 핀 (b) 융합-전문가 지원 **(c) non-persistent 버퍼 device 이동**(이번 발견)이 필요.
+- **재현성:** transformers 5.x는 MoE 표현을 적극 리팩터링 중 → 대형 MoE 로드 시 "체크포인트 포맷 ↔ 라이브러리 구조" 정합을 매번 확인. **Mixtral 전용 핀 = transformers 4.46.3 @ `~/.venvs/ai_model_mixtral`.**
 
 ---
 ## 부록: 재현 절차
