@@ -102,4 +102,11 @@ bash scripts/gpu_job.sh --name mixtralfeas --timeout 14400 --cwd "$REPO" -- \
     --grad-ckpt --seq 512 \
     --epochs 1 --smoke 8 \
     --out ./models/mixtral-8x22b-hqq2-feas
-echo "[$(date '+%F %T')] 체인 완료 — 가능성 런은 mixtralfeas 유닛에서 진행 중. GTT/스텝 모니터링 하라."
+
+# ---------- 6. 계측 백그라운드(GUI-off에도 생존) ----------
+# 학습은 detached --user 유닛에서 돈다. 계측도 setsid nohup 파일로그로 분리 → 세션·GUI 죽어도
+# GTT 피크가 파일에 남아 다음 세션이 문서화 가능. train_directml 사라지면 스스로 종료.
+MW_LOG="/home/user/gpu_jobs/logs/mem_watch_mixtral.log"
+setsid nohup bash "$REPO/scripts/mem_watch_until.sh" >"$MW_LOG" 2>&1 &
+echo "[$(date '+%F %T')] 계측 백그라운드 시작 → $MW_LOG"
+echo "[$(date '+%F %T')] 체인 완료 — 가능성 런은 mixtralfeas 유닛에서 진행 중. 계측은 $MW_LOG."
