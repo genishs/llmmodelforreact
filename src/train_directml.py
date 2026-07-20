@@ -21,6 +21,7 @@ import io
 import time
 import glob
 import json
+import signal
 import argparse
 import datetime as dt
 
@@ -503,6 +504,34 @@ def main():
         model.train()
         return tot / max(n, 1)
 
+    # ── 무인 장시간 학습 안전장치: 주기 체크포인트 + SIGTERM/SIGINT 저장 (non-smoke 전용) ──
+    # 두목 5시 수동중단(systemd stop→SIGTERM)/크래시 대비 진척 보존. smoke는 저장 안 함(미접촉).
+    out_dir = args.out if args.out else tcfg["output_dir"]
+    SAVE_EVERY = 25  # optim_step 단위 주기 저장
+    _stop_req = {"v": False}
+    def _on_term(signum, frame):
+        _stop_req["v"] = True
+        log(f"[신호 {signum}] 중단 요청 접수 — 다음 step 경계에서 저장 후 종료")
+    if not smoke:
+        signal.signal(signal.SIGTERM, _on_term)
+        signal.signal(signal.SIGINT, _on_term)
+    def _save_adapter(tag=""):
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            from peft import get_peft_model_state_dict
+            import safetensors.torch as _st
+            sd_cpu = {k: v.detach().to("cpu").float()
+                      for k, v in get_peft_model_state_dict(model).items()}
+            an = list(model.peft_config.keys())[0]
+            model.peft_config[an].save_pretrained(out_dir)
+            _st.save_file(sd_cpu, os.path.join(out_dir, "adapter_model.safetensors"))
+            tok.save_pretrained(out_dir)
+            log(f"[체크포인트{tag}] 저장 {out_dir} (step {step}, 어댑터 {len(sd_cpu)} 텐서, CPU/fp32)")
+            return True
+        except Exception as e:
+            log(f"[체크포인트 저장 실패{tag}] {type(e).__name__}: {e}")
+            return False
+
     model.train()
     run_start = time.time()
     step, micro = 0, 0
@@ -549,6 +578,11 @@ def main():
                     f"{dt_step:.1f}s/step | RAM가용 {ram_avail_gb():.1f}GB{gpu_str} | "
                     f"CPU {psutil.cpu_percent()}%{' | SKIP(nan)' if bad else ''}")
                 t_step = time.time()
+                if not smoke:
+                    if _stop_req["v"]:
+                        _save_adapter("-signal"); stop = True; break
+                    if step % SAVE_EVERY == 0:
+                        _save_adapter(f"-step{step}")
                 if smoke and step >= args.smoke:
                     stop = True
                     break
@@ -569,19 +603,10 @@ def main():
             else "[스모크 실패] step 미완료.")
         return
 
-    # 저장: DirectML 텐서는 safetensors가 storage 조회 불가(OpaqueTensorImpl)이므로
-    # PEFT save_pretrained가 실패한다. 어댑터 가중치를 CPU/fp32로 옮겨 직접 저장.
-    out_dir = args.out if args.out else tcfg["output_dir"]
-    os.makedirs(out_dir, exist_ok=True)
-    from peft import get_peft_model_state_dict
-    import safetensors.torch as st
-    sd_cpu = {k: v.detach().to("cpu").float()
-              for k, v in get_peft_model_state_dict(model).items()}
-    adapter_name = list(model.peft_config.keys())[0]
-    model.peft_config[adapter_name].save_pretrained(out_dir)  # adapter_config.json
-    st.save_file(sd_cpu, os.path.join(out_dir, "adapter_model.safetensors"))
-    tok.save_pretrained(out_dir)
-    log(f"[본런 완료] 저장: {out_dir} (어댑터 {len(sd_cpu)} 텐서, CPU/fp32)")
+    # 저장: 어댑터 가중치를 CPU/fp32로 옮겨 직접 저장(위 _save_adapter 재사용).
+    # (DirectML 텐서는 safetensors가 storage 조회 불가라 PEFT save_pretrained 실패 → 직접 저장)
+    _save_adapter("-final")
+    log(f"[본런 완료] 최종 저장 완료: {out_dir}")
 
 
 if __name__ == "__main__":
