@@ -15,7 +15,11 @@
 set -uo pipefail
 REPO="/mnt/data/Documents/workspace/study/ai_model"        # 내장 repo(코드 정본)
 BASE="/run/media/user/새 볼륨/mixtral-8x22b-v0.1"           # 외장 다운로드 타깃(bf16 원본)
-PY="/home/user/.venvs/ai_model_rocm/bin/python"
+# ⚠️ Mixtral 전용 격리 venv: transformers 4.46.3(구조식 MoE, 개별 Linear 전문가).
+# 본 ai_model_rocm(transformers 5.13.1=전문가 융합 nn.Parameter)은 HQQ per-Linear 로더와
+# 비호환 → block_sparse_moe 속성부재로 크래시. 실측: 4.46.3에서 체크포인트 키 1739개 100%
+# 매칭(scripts/check_mixtral_struct.py), torch2.10+rocm7.13 호환 확인.
+PY="/home/user/.venvs/ai_model_mixtral/bin/python"
 DL_LOG="/home/user/gpu_jobs/logs/dl_mixtral.log"
 LOG="/home/user/gpu_jobs/logs/chain_mixtral_feas.log"
 SWAP_MIN_GIB=60
