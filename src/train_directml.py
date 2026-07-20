@@ -265,9 +265,29 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
     log(f"  HQQ 스트리밍 치환 완료: Linear {n_quant}개 → HQQLinear(4bit), 총 {time.time()-t0:.1f}s")
 
     model.tie_weights()
+
+    # ★ 2026-07-21 Mixtral 실측: non-persistent 버퍼(rotary_emb.inv_freq/cos_cached/sin_cached
+    #   등)는 state_dict에 없어 위 스트리밍 루프가 안 옮긴다 → init_empty_weights가 CPU에 실제
+    #   생성한 채 잔존 → forward apply_rotary_pos_emb의 cos[position_ids]에서 device 불일치
+    #   크래시("indices ... on the same device ... (cpu)"). dense(123B)에선 안 걸렸음.
+    #   모든 버퍼를 device로 확정한다(파라미터는 위에서 양자화/적재로 이미 device).
+    dev_t = torch.device(device).type
+    moved_buf = 0
+    for name, buf in list(model.named_buffers()):
+        if buf.is_meta:
+            continue
+        if buf.device.type != dev_t:
+            set_module_tensor_to_device(model, name, device, value=buf.to(device))
+            moved_buf += 1
+    if moved_buf:
+        log(f"  non-persistent 버퍼 {moved_buf}개 device 이동(rotary inv_freq 등)")
+
     remaining = [n for n, p in model.named_parameters() if p.is_meta]
     if remaining:
         raise RuntimeError(f"적재 안 된 meta 텐서 {len(remaining)}개: {remaining[:5]}")
+    remaining_buf = [n for n, b in model.named_buffers() if b.is_meta]
+    if remaining_buf:
+        log(f"  [경고] meta 버퍼 {len(remaining_buf)}개 잔존(값없음): {remaining_buf[:3]}")
 
     # transformers 자동경로를 안 탔으므로 model.quantization_method가 안 설정됨.
     # peft.prepare_model_for_kbit_training이 이 플래그로 hqq 분기(grad-ckpt hook,

@@ -33,10 +33,10 @@ echo "[$(date '+%F %T')] smoke 종료 감지"
 sleep 5
 
 # ---------- 2. smoke 성공 판정 ----------
-done8=$(grep -c "스모크 완료" "$SMOKE_LOG" 2>/dev/null || echo 0)
-step8=$(grep -cE "step 8 \|" "$SMOKE_LOG" 2>/dev/null || echo 0)
-err=$(grep -icE "Traceback|OutOfMemory|CUDA error|HIP error|hipError|device wedged|Killed|OOM-kill|status=[0-9]+/" "$SMOKE_LOG" 2>/dev/null || echo 0)
-badloss=$(grep -oE "loss\(avg[0-9]+\) (nan|inf|-inf)" "$SMOKE_LOG" 2>/dev/null | wc -l)
+done8=$(grep -c "스모크 완료" "$SMOKE_LOG" 2>/dev/null); done8=${done8:-0}
+step8=$(grep -cE "step 8 \|" "$SMOKE_LOG" 2>/dev/null); step8=${step8:-0}
+err=$(grep -icE "Traceback|OutOfMemory|CUDA error|HIP error|hipError|device wedged|Killed|OOM-kill|RuntimeError" "$SMOKE_LOG" 2>/dev/null); err=${err:-0}
+badloss=$(grep -oE "loss\(avg[0-9]+\) (nan|inf|-inf)" "$SMOKE_LOG" 2>/dev/null | wc -l); badloss=${badloss:-0}
 lastloss=$(grep -oE "loss\(avg[0-9]+\) [0-9.]+" "$SMOKE_LOG" 2>/dev/null | tail -1)
 echo "[$(date '+%F %T')] 판정: 스모크완료=$done8 step8=$step8 err=$err badloss=$badloss last='$lastloss'"
 if [ "$done8" -lt 1 ] || [ "$step8" -lt 1 ] || [ "$err" -gt 0 ] || [ "$badloss" -gt 0 ]; then
