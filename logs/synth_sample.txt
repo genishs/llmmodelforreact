@@ -1,0 +1,82 @@
+[1] 불리언 상태를 토글하는 useToggle 커스텀 훅을 만들어줘
+import { useState, useCallback } from 'react';
+
+function useToggle(initialValue = false): [boolean, () => void, (v: boolean) => void] {
+  const [value, setValue] = useState(initialValue);
+  const toggle = useCallback(() => setValue((v) => !v), []);
+  const set = useCallback((v: boolean) => setValue(v), []);
+  return [value, toggle, set];
+}
+
+// 사용 예시
+function ToggleDemo() {
+  const [isOpen, toggle, setOpen] = useToggle(false);
+  return (
+    <div>
+      <p>상태: {isOpen ? '열림' : '닫힘'}</p>
+      <button onClick={toggle}>토글</button>
+      <button onClick={() => setOpen(true)}>열기</button>
+    </div>
+  );
+}
+
+export { useToggle };
+
+[2] 이전 렌더링의 값을 기억하는 usePrevious 훅을 구현해줘
+import { useRef, useEffect } from 'react';
+
+function usePrevious<T>(value: T): T | undefined {
+  const ref = useRef<T | undefined>(undefined);
+  useEffect(() => {
+    ref.current = value;
+  }, [value]);
+  return ref.current;
+}
+
+// 사용 예시
+import { useState } from 'react';
+function Counter() {
+  const [count, setCount] = useState(0);
+  const prev = usePrevious(count);
+  return (
+    <div>
+      <p>현재: {count} / 이전: {prev ?? '-'}</p>
+      <button onClick={() => setCount((c) => c + 1)}>+1</button>
+    </div>
+  );
+}
+
+export { usePrevious };
+
+[3] 일정 간격으로 콜백을 실행하는 useInterval 훅을 만들어줘
+import { useEffect, useRef } from 'react';
+
+function useInterval(callback: () => void, delay: number | null) {
+  const savedCallback = useRef(callback);
+
+  useEffect(() => {
+    savedCallback.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    if (delay === null) return;
+    const id = setInterval(() => savedCallback.current(), delay);
+    return () => clearInterval(id);
+  }, [delay]);
+}
+
+// 사용 예시
+import { useState } from 'react';
+function Timer() {
+  const [sec, setSec] = useState(0);
+  const [on, setOn] = useState(false);
+  useInterval(() => setSec((s) => s + 1), on ? 1000 : null);
+  return (
+    <div>
+      <p>{sec}초</p>
+      <button onClick={() => setOn((a) => !a)}>{on ? '정지' : '시작'}</button>
+    </div>
+  );
+}
+
+export { useInterval };

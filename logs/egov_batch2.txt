@@ -1,0 +1,149 @@
+
+======================================================================
+## [생성] 지도 레이어 토글 훅
+----------------------------------------------------------------------
+export const useLayerToggle = (layer: Layer, options?: { initialState: boolean }) => {
+  const [isOpen, setIsOpen] = useState(options?.initialState ?? false)
+
+  return useEventCallback((e) => {
+    if (!e.target.closest('.map')) {
+      setIsOpen(false)
+    }
+  }, [])
+
+  return useLayersEvent('layersend', 'layernotfound', () => {
+    setIsOpen(false)
+  }, {
+    layer,
+    event: 'layersend',
+    target: layer.id,
+    handler: e => {
+      e.preventDefault()
+      if (e.metaKey || e.ctrlKey) {
+        setIsOpen(prev => !prev)
+      } else {
+        setIsOpen(true)
+      }
+      useLayerToggle.dispatch(e, {
+        props: { isOpen },
+      })
+    },
+  })
+
+======================================================================
+## [생성] useFetch 로딩상태 훅
+----------------------------------------------------------------------
+export function useFetch<T = unknown>(url: string) {
+  const [status, dispatch] = useReducer(reducer, initialStatus)
+
+  useEffect(() => {
+    let aborted = false
+
+    fetch(url)
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+        return response.json() as Promise<T>
+      })
+      .then(data => {
+        if (!aborted) dispatch(fulfilled({ data }))
+      })
+      .catch(error => {
+        if (!aborted) dispatch(rejected(error))
+      })
+
+    return () => {
+      aborted = true
+    }
+  }, [url])
+
+  return { status, ...mapStatus(status) }
+}<|fim_middle|>
+
+======================================================================
+## [생성] CheckboxGroup 컴포넌트
+----------------------------------------------------------------------
+export const CheckboxGroup = ({ options, defaultValue, ...props }: Props) => {
+  return (
+    <div className="flex flex-col gap-2">
+      {options.map((option, index) => {
+        return (
+          <label key={index} {...props} data-state={defaultChecked(option, defaultValue)} className="flex items-center gap-3 rounded border px-3 py-2 text-sm">
+            <input type="checkbox" value={option.value} />
+            <span>{option.label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+};<|fim_middle|>
+
+======================================================================
+## [리뷰] EgovRadioButtonGroup.jsx
+----------------------------------------------------------------------
+React 컴포넌트를 검토하고 개선점을 제안해줘.
+
+### Input:
+import type { InputType } from "@typez/react";
+import type { Control } from "react-hook-form";
+import * as zod from "zod";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectItem } from "@/components/ui/select";
+import { SelectContent } from "@/components/ui/select-content";
+import { SelectTrigger } from "@/components/ui/select-trigger";
+import { Switch } from "@/components/ui/switch";
+import { toast } from "@/components/ui/toast";
+import { cn } from "@/
+
+======================================================================
+## [TS변환] EgovImageGallery.jsx
+----------------------------------------------------------------------
+import React from "react";
+import { SERVER_URL } from "@/config";
+
+type PropsType = {
+  boardFiles?: any[];
+};
+
+function EgovImageGallery(props: PropsType) {
+  const { boardFiles } = props;
+
+  let filesTag = [];
+
+  if (boardFiles !== undefined) {
+    boardFiles.forEach(function (item, index) {
+      filesTag.push(
+        <React.Fragment key={index}>
+          <img
+            src={`${SERVER_URL}/image?atchFileId=${item.atchFileId}&fileSn=${item.fileSn}`}
+            alt=""
+          />
+          <br />
+        </React.Fragment>
+      );
+    });
+  }
+
+  return <div className="board_attach_img">{filesTag}</div>;
+}
+
+export default EgovImageGallery;<|fim_middle|>
+
+======================================================================
+## [리뷰] EgovError.jsx
+----------------------------------------------------------------------
+export default function ErrorPage({ error }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  navigate("/error", {
+    state: { from: location },
+    replace: false,
+  });
+
+  return null;
+}<|fim_middle|>

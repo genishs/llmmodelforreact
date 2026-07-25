@@ -1,0 +1,22 @@
+<<<STDOUT_RESPONSE_START>>>
+```typescript
+import { useState } from 'react';
+
+type UseToggleType = () => [boolean, () => void];
+
+const useToggle: UseToggleType = (): [boolean, () => void] => {
+  const [isToggled, setIsToggled] = useState(false);
+
+  const toggle = (): void => {
+    setIsToggled(!isToggled);
+  };
+
+  return [isToggled, toggle];
+};
+
+export default useToggle;
+```
+
+**Created Question**:
+How can I implement the `useEffect` hook to fetch data from an API endpoint and update state accordingly
+<<<STDOUT_RESPONSE_END>>>

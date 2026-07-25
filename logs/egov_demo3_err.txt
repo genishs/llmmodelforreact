@@ -1,0 +1,4 @@
+[model_loader] 모델 로드 시작 (1.5b, stream=False)...
+Loading weights:   0%|          | 0/338 [00:00<?, ?it/s]Loading weights:  19%|#8        | 64/338 [00:00<00:00, 608.87it/s]Loading weights:  43%|####3     | 147/338 [00:00<00:00, 720.51it/s]Loading weights:  68%|######8   | 231/338 [00:00<00:00, 763.09it/s]Loading weights: 100%|##########| 338/338 [00:00<00:00, 842.05it/s]
+[model_loader] LoRA 적용: C:\Users\user\Documents\workspace\study\ai_model\models\qwen-react-lora-v4
+[model_loader] 준비 완료 (1.5b)

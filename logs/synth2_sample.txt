@@ -1,0 +1,36 @@
+[1] useThrottle 커스텀 훅을 구현해줘
+import { useRef, useCallback } from 'react';
+
+function useThrottle<T extends (...args: never[]) => void>(fn: T, wait: number): T {
+  const last = useRef(0);
+  return useCallback((...args: Parameters<T>) => {
+    const now = Date.now();
+    if (now - last.current >= wait) {
+      last.current = now;
+      fn(...args);
+    }
+  }, [fn, wait]) as T;
+}
+
+export { useThrottle };
+
+[2] sessionStorage와 동기화되는 useSessionStorage 훅을 만들어줘
+import { useState, useEffect } from 'react';
+
+function useSessionStorage<T>(key: string, init: T): [T, (v: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const s = sessionStorage.getItem(key);
+      return s ? JSON.parse(s) : init;
+    } catch { return init; }
+  });
+
+  useEffect(() => {
+    try { sessionStorage.setItem(key, JSON.stringify(value)); }
+    catch (e) { console.error(e); }
+  }, [key, value]);
+
+  return [value, setValue];
+}
+
+export { useSessionStorage };

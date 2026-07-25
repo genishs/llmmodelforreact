@@ -1,0 +1,17 @@
+[model_loader] 7B v3 로드 시작...
+`torch_dtype` is deprecated! Use `dtype` instead!
+[loader] 339 tensors 적재 시작 (host RAM 37.4GB)
+Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+  File "C:\Users\user\Documents\workspace\study\ai_model\src\model_loader.py", line 69, in generate
+    model, tokenizer, device = get_model()
+                               ^^^^^^^^^^^
+  File "C:\Users\user\Documents\workspace\study\ai_model\src\model_loader.py", line 47, in get_model
+    model = stream_load_to_device(BASE_MODEL_PATH, _device, DTYPE)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user\Documents\workspace\study\ai_model\src\dml_loader.py", line 62, in stream_load_to_device
+    set_module_tensor_to_device(model, name, device, value=t)
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\accelerate\utils\modeling.py", line 343, in set_module_tensor_to_device
+    new_value = value.to(device, non_blocking=non_blocking)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0 in position 4: invalid start byte

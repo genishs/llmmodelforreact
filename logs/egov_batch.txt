@@ -1,0 +1,100 @@
+
+======================================================================
+## EgovRadioButton.jsx → TS 변환
+----------------------------------------------------------------------
+type RadioButtonProps = {
+  name: string;
+  label: string;
+  value: string;
+  checkedValue: string;
+  setter: (value: string) => void;
+};
+
+function EgovRadioButton({
+  name,
+  label,
+  value,
+  checkedValue,
+  setter,
+}: RadioButtonProps) {
+  const checked = value === checkedValue;
+  const toggledClassName = checked ? "f_rdo on" : "f_rdo";
+
+  return (
+    <label className={toggledClassName}>
+      <input
+        type="radio"
+        name={name}
+        value={value}
+        title={label}
+        checked={checked}
+        onChange={(event) => setter(event.target.value)}
+      />
+      <em>{label}</em>
+    </label>
+  );
+}
+
+export default EgovRadioButton; // eslint-disable-line import/no-default-export
+
+======================================================================
+## egovFetch.jsx → 리뷰
+----------------------------------------------------------------------
+export async function requestFetch<T>(url: string, options?: RequestInit): Promise<T> {
+  try {
+    const response = await fetch(`${SERVER_URL}${url}`, {
+      method: options?.method ?? "GET",
+      headers: {
+        ...(options?.headers as HeadersInit),
+        "Content-Type": "application/json",
+      },
+      body: options?.body ? JSON.stringify(options.body) : undefined,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+    }
+
+    return await response.json() as T;
+  } catch (error) {
+    throw new Error(`Error fetching ${url}: ${String(error)}`);
+  }
+}<|fim_middle|>
+
+======================================================================
+## EgovPaging.jsx → 리뷰
+----------------------------------------------------------------------
+`EgovPaging` 컴포넌트는 페이지네이션을 관리하는 React 컴포넌트로, `props`로 전달되는 `pagination` 객체로부터 정보를 추출하여 UI를渲染합니다.
+
+### Input:
+import React from "react";
+import { Link } from "react-router-dom";
+
+// import "./styles.css";
+
+const Layout = () => {
+  return (
+    <div className="App">
+      <header className="App-header">
+        <ul>
+          <li>
+            <Link to="/">Home</Link>
+          </li>
+          <li>
+            <Link to="/about">About</Link>
+          </li>
+          <li>
+            <Link to="/users">Users</Link>
+          </li>
+        </ul>
+      </header>
+    </div>
+  );
+};
+
+export default Layout;
+export { Layout as DefaultLayout };
+export { Layout as AdminLayout };
+
+### Response:
+`DefaultLayout`라는 이름으로도

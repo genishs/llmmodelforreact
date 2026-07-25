@@ -1,0 +1,5 @@
+[model_loader] 7B v3 로드 시작...
+`torch_dtype` is deprecated! Use `dtype` instead!
+[loader] 339 tensors 적재 시작 (host RAM 4.9GB)
+[loader] 적재 완료: 339 tensors, 18.1s, host RAM 2.8GB
+[model_loader] 준비 완료 (7B fp16 + v3 어댑터)

@@ -1,0 +1,15 @@
+SERVING: \qwen-react-lora-7b-v4
+<<<RESP>>>
+Certainly! Below is an example of a custom `useThrottle` hook in React. This hook takes a function and a delay time, and it returns a throttled version of that function.
+
+```jsx
+import { useRef } from 'react';
+
+function useThrottle(func, delay) {
+  const timeoutRef = useRef(null);
+
+  return (...args) => {
+    if (!timeoutRef.current) {
+      func(...args);
+      timeoutRef
+<<<END>>>

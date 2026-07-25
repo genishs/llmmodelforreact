@@ -1,0 +1,19 @@
+cuda? False
+picked device kind: dml
+<<<R>>>
+import { useState } from 'react';
+
+function useToggle() {
+  const [on, setOn] = useState(false);
+
+  return [
+    on,
+    (e) => {
+      e.preventDefault();
+      setOn((o) => !o);
+    },
+  ] as const;
+}
+
+export default useToggle;<|fim_middle|>
+<<<END>>>

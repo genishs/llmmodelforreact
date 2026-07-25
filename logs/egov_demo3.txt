@@ -1,0 +1,41 @@
+<<<REVIEW>>>
+export function EgovSelect({
+  id,
+  name,
+  title,
+  options,
+  setValue,
+  setter,
+}: {
+  id?: string | number;
+  name: string;
+  title: string;
+  options: any[];
+  setValue: any;
+  setter: (value: any) => void;
+}) {
+  return (
+    <select
+      id={id}
+      name={name}
+      title={title}
+      defaultValue={setter(setValue)}
+      onChange={(e) => {
+        setter(e.target.value);
+      }}
+    >
+      {options.map((option, i) => {
+        return (
+          <option key={i} value={option.value}>
+            {option.label}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
+export default EgovSelect; `. `, `onchange`, `defaultvalue`, `setvalue` 등에 대해 고려해줘. export const EgovSelect = ({
+  id,
+  name,
+<<<END>>>

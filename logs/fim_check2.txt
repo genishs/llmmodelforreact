@@ -1,0 +1,15 @@
+FIM_present: False
+<<<R>>>
+import { useState } from 'react';
+
+export function useToggle(defaultValue = false): [boolean, () => void] {
+  const [value, setValue] = useState(defaultValue);
+  return [value, () => setValue((v) => !v)];
+}
+
+export default function App() {
+  const [open, setOpen] = useToggle();
+
+  return (
+    <div className="App">
+<<<END>>>

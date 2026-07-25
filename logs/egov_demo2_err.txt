@@ -1,0 +1,27 @@
+[model_loader] 모델 로드 시작 (1.5b, stream=False)...
+Loading weights:   0%|          | 0/338 [00:00<?, ?it/s]Loading weights:  12%|#1        | 39/338 [00:00<00:01, 284.10it/s]Loading weights:  22%|##2       | 75/338 [00:00<00:00, 309.10it/s]Loading weights:  33%|###3      | 113/338 [00:00<00:00, 329.64it/s]Loading weights:  43%|####3     | 147/338 [00:00<00:00, 329.24it/s]Loading weights:  54%|#####4    | 183/338 [00:00<00:00, 331.61it/s]Loading weights:  65%|######4   | 219/338 [00:00<00:00, 336.60it/s]Loading weights:  75%|#######5  | 255/338 [00:00<00:00, 323.07it/s]Loading weights:  86%|########6 | 291/338 [00:00<00:00, 321.72it/s]Loading weights:  97%|#########6| 327/338 [00:01<00:00, 331.08it/s]Loading weights: 100%|##########| 338/338 [00:01<00:00, 336.61it/s]
+[model_loader] LoRA 적용: C:\Users\user\Documents\workspace\study\ai_model\models\qwen-react-lora-v4
+Traceback (most recent call last):
+  File "<string>", line 7, in <module>
+  File "C:\Users\user\Documents\workspace\study\ai_model\src\model_loader.py", line 92, in generate
+    model, tokenizer, device = get_model()
+                               ^^^^^^^^^^^
+  File "C:\Users\user\Documents\workspace\study\ai_model\src\model_loader.py", line 82, in get_model
+    model = model.to(_device)
+            ^^^^^^^^^^^^^^^^^
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\torch\nn\modules\module.py", line 1174, in to
+    return self._apply(convert)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\torch\nn\modules\module.py", line 780, in _apply
+    module._apply(fn)
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\torch\nn\modules\module.py", line 780, in _apply
+    module._apply(fn)
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\torch\nn\modules\module.py", line 780, in _apply
+    module._apply(fn)
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\torch\nn\modules\module.py", line 805, in _apply
+    param_applied = fn(param)
+                    ^^^^^^^^^
+  File "C:\Users\user\Documents\workspace\study\ai_model\venv\Lib\site-packages\torch\nn\modules\module.py", line 1160, in convert
+    return t.to(
+           ^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0 in position 4: invalid start byte
