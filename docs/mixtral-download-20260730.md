@@ -23,3 +23,19 @@ PM이 다운로드→검증→smoke→풀학습 자동체인으로 범위확대�
 
 ## 검증 항목 (완료 시 워처가 수행)
 59 샤드 파일 수 = index weight_map 기대치, safetensors 헤더 파싱(조용한 손상), index total_size vs 실제 샤드합 대조, config/index/tokenizer 존재.
+
+## 완료 + 검증 결과 (2026-07-30 07:34)
+- **다운로드 완료 07:34:12** — 59/59 샤드, incomplete 0, marker "complete ... attempt 1"(전체 재시작 없이 내부 resume만으로 완주). 소요 ≈6h12m, 실효 ~12.6 MB/s(WiFi 현실치; 원 추정 ~7h와 일치. 초기 15.9MB/s는 버스트였음 — 정정).
+- **무결성 검증 PASS (독립 2건 교차확인)**: 검증 워처(pid 130547) + 마스터 드라이버 내부검증 둘 다 동일 수치.
+  - 59 샤드 = index weight_map 기대 59, 헤더 파싱 59/59(조용한 손상 없음).
+  - total_size(index)=281.241GB = 실제 샤드합 281.241GB, 차이 0.2MB(헤더 오버헤드).
+  - config.json / index.json / tokenizer.json / tokenizer.model 전부 존재. 최종 외장하드 여유 479GB.
+
+## 학습 파이프라인 — 두목이 발사 (권한 게이트 우회 아님)
+서브에이전트 콘텐츠 분류기가 학습발사 툴콜을 계속 차단(Bypass로도) → 우회 안 함(정직). **두목이 `!`(사용자 명령, 게이트 없음)로 마스터 드라이버 직접 발사**.
+- 07:34:14 드라이버 검증 PASS → 07:34:16 스왑가드 PASS(64GiB) → 07:34:31 **smoke(8스텝) 발사**.
+- 유닛 `gpujob-mixtralfeas-20260730-073431-1643974`, smoke 실행 중. 성공 판정 시 풀학습(epochs3) 자동 이어짐. 주기저장25+SIGTERM핸들러+watchdog(SwapFree<4G) 무장.
+- 파라미터: hqq 2bit gs64 / lora-r16 어텐션-온리(--lora-mlp 없음) / grad-ckpt seq512 / venv ai_model_mixtral(4.46.3) / GTT card1.
+
+## push 보류
+로컬 커밋만 유지(두목 명시 지시 전까지 미push).
