@@ -51,7 +51,36 @@ scripts/gpu_job.sh --name bdprobe141bv3 --timeout 9000 \
 - 유닛: `gpujob-bdprobe141bv3-20260730-232447-11453.service`, 로그:
   `~/gpu_jobs/logs/gpujob-bdprobe141bv3-20260730-232447-11453.log`.
 - 23:25:04 비양자화 텐서 115개 로드 완료(RAM 가용 52.9GB) — v2와 동일 궤적으로 정상 진행 확인.
-- 결과(배치=N 배수, peak GPU mem)는 완료 후 별도 기록 예정.
+- 1624 Linear 양자화 → 워밍업(웨지 없음 확인) → batch=1/2/4 측정까지 무중단 완주.
+
+## 결과 (2026-07-31 01:11 완료, exit 0, elapsed 6395s ≈ 1h46m, 무웨지)
+
+| batch | tok/s | 배수(batch=1 대비) |
+|---|---|---|
+| 1 | 0.09 | — |
+| 2 | 0.19 | **1.95x** |
+| 4 | 0.36 | **3.75x** |
+
+- **peak GPU mem: 47.31 GB** / 56GiB GTT 캡 — 여유 ~8.7GB.
+- 배수가 거의 선형(batch=4에서 이론치 4x 대비 94%) — `gen_batch_utils.py` 설계 가설
+  ("역양자화 비용은 스텝당 1회, 배치 크기와 무관 → 배치=N 이 거의 공짜로 N배 처리")이
+  이 실측으로 뒷받침됨. 채점 시간 단축 여지가 실재한다.
+
+### ⚠️ 안전 배치 크기 — 이 수치를 heldout7 실채점에 그대로 쓰면 안 되는 이유
+프로브 프롬프트 8개는 전부 짧고 길이가 균일(~20~30 입력토큰). 반면 실제 heldout7은
+**212~7314 토큰**으로 34배 편차(`ho-admin-medit`가 최장 아웃라이어, `gen_batch_utils.py`
+실측 기록). batch=4로 긴/혼합 길이를 묶으면 좌패딩+KV캐시가 이 프로브보다 훨씬 큰 여유(8.7GB)를
+잠식한다 — 이 런에서는 토큰당 KV캐시 증분비용을 분리 측정하지 않았으므로 "안전한
+batch-token-budget 숫자"를 여기서 확정하지 않는다(과장 금지).
+
+**권고**: 실채점은 flat batch=4가 아니라 이미 구현된 `bucket_by_length`/
+`eval_hard_tsc.py --batch-size --batch-token-budget` 경로를 쓴다 — 아웃라이어(medit)는
+자연히 단독 버킷(batch=1)이 되고, 길이가 비슷한 나머지만 batch≤4로 묶인다.
+
+## 다음 단계
+`EGOV_SRC=/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src` export 후
+`models/mixtral-8x22b-hqq2-full` 어댑터로 실제 heldout7 채점(`eval_hard_tsc.py --batch-size`)
+착수 예정.
 
 ## 141B 학습 상태 참고 (프로브와 별개, 이미 완료)
 `gpujob-mixtralfull-20260730-100218-1990482` 이 22:48:44에 **정상 완료**(exit 0, 118 step,
