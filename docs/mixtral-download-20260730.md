@@ -37,5 +37,24 @@ PM이 다운로드→검증→smoke→풀학습 자동체인으로 범위확대�
 - 유닛 `gpujob-mixtralfeas-20260730-073431-1643974`, smoke 실행 중. 성공 판정 시 풀학습(epochs3) 자동 이어짐. 주기저장25+SIGTERM핸들러+watchdog(SwapFree<4G) 무장.
 - 파라미터: hqq 2bit gs64 / lora-r16 어텐션-온리(--lora-mlp 없음) / grad-ckpt seq512 / venv ai_model_mixtral(4.46.3) / GTT card1.
 
+## smoke 결과 = PASS (2026-07-30 09:52) — 오선생 스튜어드 관측
+- 모델 로드: HQQ 1624 Linear, ~82분(4934s). **08:57:06 non-persistent 버퍼 168개 device 이동 = 0d3fb4a rotary 수정본 실행** → 지난 세션 크래시 지점 통과.
+- LoRA: trainable 34,865,152 / all 35.5B, **trainable% 0.098% = 어텐션-온리 확정**(--lora-mlp 아님).
+- 8스텝 loss(avg8) 궤적: 8.4572 → 8.2799 → 7.0781 → 5.2894 → 5.2465 → 3.9091 → 3.1753 → 3.1837 (유한·수렴, ~407s/step).
+- 09:52:23 `[스모크 완료] backward 정상 동작 확인됨`. **mem_watch PEAK GTT 47.3GiB / 56 캡**(여유 8.7GiB). 무크래시.
+- 판정: 8스텝 완주+loss 유한+무크래시 = **PASS**.
+
+## 풀학습 발사·진행 (2026-07-30 10:02) — 두목 ! 발사 파이프라인
+- 마스터 드라이버가 smoke PASS 판정 → **10:02:18 풀학습 자동 발사**(정상 완료 후 종료).
+- 유닛 `gpujob-mixtralfull-20260730-100218-1990482`, train pid 1990522(--smoke 없음=풀런).
+- 10:02:24 HQQ 스트리밍 로드 **nbits=2 group_size=64 확정**(smoke 로그의 "HQQLinear(4bit)"는 정적 로그 오표기 — 실제 2bit).
+- epochs 3, out `./models/mixtral-8x22b-hqq2-full`. 주기저장 25step + SIGTERM 핸들러 무장.
+- 추정: 로드 ~82분(~11:24 스텝시작) + 3에폭(~117 optim step × ~407s ≈ 13.2h) ≈ **총 ~14.5h → ~00:30(07-31) 완료 예상**. FULL_TIMEOUT 24h 커버.
+
+## ⚠️ 진단: safety watchdog 부분 버그(기존 스크립트)
+`scripts/mixtral_safety_watch.sh` 21-22행: `oom=$(journalctl ... | grep -icE ... || echo 0)` → grep -c 무매칭이 "0"+exit1이라 `|| echo 0`가 덧붙어 `$oom="0\n0"`(멀티라인) → `[ "$oom" -gt 0 ]` "integer expected" 에러(매 15s 스팸).
+- 영향: **journalctl 기반 OOM/amdgpu 웨지 탐지 무력화**. 단 **SwapFree<4G 스왑가드는 정상**(주 프리즈 신호 보호됨), 스퍼리어스 중단 없음.
+- 권고(차기 런): 21행을 `oom=$(journalctl -k ... | grep -icE "..."); oom=${oom//$'\n'/}; oom=${oom:-0}` 식으로 단일정수화. **현재 런에는 미적용**(도는 watchdog 인스턴스에 영향 없음+간섭 금지). 재발사·수정 반영은 두목 ! 통해.
+
 ## push 보류
 로컬 커밋만 유지(두목 명시 지시 전까지 미push).
