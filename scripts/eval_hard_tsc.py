@@ -30,6 +30,8 @@ from peft import PeftModel
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 from train_directml import load_hqq_onthefly  # noqa: E402  (src/train_directml.py의 검증된 HQQ 스트리밍 로더 재사용)
+sys.path.insert(0, str(ROOT / "scripts"))
+from gen_batch_utils import build_prompt, bucket_by_length, generate_batch  # noqa: E402  (배치 디코드, 이슈 #9)
 
 BASE = str(ROOT / "models" / "base" / "qwen2.5-coder-7b")
 
@@ -278,6 +280,17 @@ def main():
                          "32B처럼 bf16이 통합메모리 총량을 넘는 모델도 레이어 스트리밍이라 안전.")
     ap.add_argument("--hqq-nbits", type=int, default=4, help="HQQ 비트수(기본 4)")
     ap.add_argument("--hqq-group-size", type=int, default=64, help="HQQ group_size(기본 64)")
+    ap.add_argument("--batch-size", type=int, default=1,
+                    help="배치 디코드 최대 배치 크기(이슈 #9, 2026-07-30). 기본 1=기존 순차 경로와 "
+                         "완전 동일(회귀 없음, gen_batch_utils.generate_batch가 배치=1일 땐 패딩이 "
+                         "발생하지 않아 동일 텐서/kwargs). >1이면 gen_batch_utils.bucket_by_length로 "
+                         "입력토큰 길이순 그리디 버킷팅 후 버킷당 1회 generate() 호출. "
+                         "★ 배치=N의 실제 배수는 아직 GPU에서 실측되지 않음(batch_decode_probe.py 참고) "
+                         "— 메모리 여유를 보며 작게(2~3) 시작할 것.")
+    ap.add_argument("--batch-token-budget", type=int, default=None,
+                    help="버킷당 (배치크기×버킷내 최대 입력토큰) 상한(좌패딩 낭비+KV캐시 폭주 방지). "
+                         "미지정 시 --batch-size 개수 제한만 적용(길이 편차 큰 heldout7엔 위험 — "
+                         "ho-admin-medit류 아웃라이어와 짧은 태스크를 한 배치에 묶으면 OOM 가능).")
     args = ap.parse_args()
 
     base_tasks = HELDOUT_TASKS if args.heldout else TASKS
@@ -295,35 +308,51 @@ def main():
                              quant=args.quant, hqq_nbits=args.hqq_nbits, hqq_group_size=args.hqq_group_size)
     eos_id, suppress_tokens = gen_setup(tok)
 
-    files = []  # (task, filename, in_len, nchars, truncated)
+    # 프롬프트 조립 + 입력토큰 길이(버킷팅용). ★ EOL 정규화(LF): git hash-object는 autocrlf로
+    # EOL을 숨기지만 모델은 raw 바이트를 토크나이즈하므로 CRLF/LF가 입력에 반영됨.
+    # 양 노드 LF로 통일해야 진짜 바이트 동일.
+    prompt_meta = []  # (name, prompt, in_len)
     for name, instr, inp, inline in tasks:
         if inp:
-            # ★ EOL 정규화(LF): git hash-object는 autocrlf로 EOL을 숨기지만 모델은 raw 바이트를
-            #   토크나이즈하므로 CRLF/LF가 입력에 반영됨. 양 노드 LF로 통일해야 진짜 바이트 동일.
             code = (EGOV / inp).read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            prompt = f"### Instruction:\n{instr}\n\n### Input:\n{code}\n\n### Response:\n"
+            prompt = build_prompt(instr, code)
         elif inline:
-            prompt = f"### Instruction:\n{instr}\n\n### Input:\n{inline}\n\n### Response:\n"
+            prompt = build_prompt(instr, inline)
         else:
-            prompt = f"### Instruction:\n{instr}\n\n### Response:\n"
-        inputs = {k: v.to(model.device) for k, v in tok(prompt, return_tensors="pt").items()}
-        in_len = inputs["input_ids"].shape[1]
-        with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=args.max_new, min_new_tokens=24,
-                                 do_sample=False, pad_token_id=eos_id, eos_token_id=eos_id,
-                                 suppress_tokens=suppress_tokens, repetition_penalty=1.1)
-        new_tokens = out.shape[1] - in_len
-        gen_ids = out[0][in_len:]
-        # 잘림 판정: eos 없이 max_new에 도달 = 생성이 잘림(JSX 미완결 등의 원인 후보)
-        truncated = bool(int(eos_id) not in gen_ids.tolist() and new_tokens >= args.max_new)
-        gen = tok.decode(gen_ids, skip_special_tokens=True)
-        src = strip_fences(gen)
-        fname = f"{args.label}__{name}.tsx"
-        (CASES / fname).write_text(src, encoding="utf-8")
-        (ARCHIVE_DIR / fname).write_text(src, encoding="utf-8")  # 영구보존(단독컴파일 소스)
-        files.append((name, fname, in_len, len(src), truncated))
-        print(f"  generated [{name:18s}] {len(src):5d} chars "
-              f"(in={in_len}tok new={new_tokens}{' TRUNC!' if truncated else ''})", flush=True)
+            prompt = build_prompt(instr, None)
+        in_len = len(tok(prompt)["input_ids"])
+        prompt_meta.append((name, prompt, in_len))
+
+    # 버킷팅(gen_batch_utils.bucket_by_length): --batch-size<=1(기본)이면 전부 단독 버킷
+    # = 기존 순차 경로와 동일 순서·동일 generate() 호출(회귀 없음). >1이면 길이순 그리디로 묶어
+    # 버킷당 1회 generate() 호출 — HQQ 역양자화 비용(대역폭 바운드, 배치와 무관)을 여러 시퀀스에 분산.
+    buckets = bucket_by_length(prompt_meta, max_batch=args.batch_size,
+                               max_batch_tokens=args.batch_token_budget)
+    if args.batch_size > 1:
+        sizes = ",".join(str(len(b)) for b in buckets)
+        print(f"  batch-decode: {len(tasks)}개 태스크 -> {len(buckets)}개 버킷(크기 {sizes}) "
+              f"[max_batch={args.batch_size} token_budget={args.batch_token_budget}]", flush=True)
+
+    files = []  # (task, filename, in_len, nchars, truncated)
+    for bucket in buckets:
+        names = [b[0] for b in bucket]
+        prompts = [b[1] for b in bucket]
+        in_lens = [b[2] for b in bucket]
+        gen_results = generate_batch(model, tok, prompts, args.max_new, eos_id, suppress_tokens)
+        for name, in_len, (raw_ids, truncated, new_tokens) in zip(names, in_lens, gen_results):
+            gen = tok.decode(raw_ids, skip_special_tokens=True)
+            src = strip_fences(gen)
+            fname = f"{args.label}__{name}.tsx"
+            (CASES / fname).write_text(src, encoding="utf-8")
+            (ARCHIVE_DIR / fname).write_text(src, encoding="utf-8")  # 영구보존(단독컴파일 소스)
+            files.append((name, fname, in_len, len(src), truncated))
+            print(f"  generated [{name:18s}] {len(src):5d} chars "
+                  f"(in={in_len}tok new={new_tokens}{' TRUNC!' if truncated else ''})", flush=True)
+
+    # 버킷 처리 순서 = 길이순(원 task 순서 아님) → 리포트 가독성/과거 결과와의 비교를 위해 재정렬.
+    # (batch_size=1일 때는 버킷이 이미 원순서라 이 재정렬은 no-op.)
+    _order = {t[0]: i for i, t in enumerate(tasks)}
+    files.sort(key=lambda f: _order[f[0]])
 
     print("  running tsc (파일별 단독컴파일) ...", flush=True)
     per_file = run_tsc([f[1] for f in files])

@@ -145,6 +145,28 @@ config `config/training_config.yaml`.
   (harness_ver `HELDOUT7-mn4096-lf-PERFILE-noTS2347`, `--base`/`--base-load{4bit,bf16,fp16}` 지원).
 - **val_loss는 일반화와 역행한다(실측)**: r4mlp `eval_loss 0.3853`(더 낮음) → **71.4%** /
   r6base `0.4096` → **88.6%**. **loss 곡선이 예쁜 걸 성공 신호로 읽지 말 것.**
+
+### ⚡ 배치 디코드 (이슈 #9, 2026-07-30 — 123B/141B 채점 병목 대응, ★실배수 미검증)
+- **문제**: 123B heldout7 채점이 batch=1 순차 decode로 20h+ 걸려 5/7 타임아웃(141B는 더 느림).
+  `batch_decode_probe.py`(2026-07-16, 샤스 설계)가 배치=N 배수를 재려 작성됐으나 **실행 로그가
+  0건** — 만들고 GPU에서 한 번도 안 돌려본 상태였음(2026-07-30 확인).
+- **분석**: HQQ 2bit/4bit 디코드는 스텝당 가중치 역양자화가 지배 비용(대역폭 바운드)이고 배치
+  크기와 무관 → 배치=N이면 같은 비용으로 스텝당 N토큰. `eval_hard_tsc.py`는 태스크 7개를
+  **순차 단일-generate()**로 돌려 이 이득을 전혀 못 쓰고 있었음.
+- **실측(123B 토크나이저, GPU 0, 순수 토크나이즈)**: heldout7 입력토큰 = 212~7314 (34배 편차,
+  `ho-admin-medit` 최장) → 7개 전부 한 배치는 짧은 태스크에 좌패딩 낭비 + medit의 긴 컨텍스트가
+  KV캐시를 배치 전체에 강제해 OOM 위험(123B는 40GB 천장 근처라 여유 얇음).
+- **조치**: `scripts/gen_batch_utils.py`(순수 로직: `bucket_by_length`=길이순 그리디 버킷팅,
+  `build_prompt`, `trim_generated_at_eos`) + `generate_batch`(배치 1회 generate) 신설.
+  `eval_hard_tsc.py`에 `--batch-size`(기본 1=기존과 완전 동일, 회귀 없음)·`--batch-token-budget`
+  플래그로 통합. 단위테스트 16개(`scripts/test_gen_batch_utils.py`+`_torch.py`, GPU 0) 전부 PASS.
+- **★미검증**: 배치=N의 실제 배수(throughput 배)는 아직 GPU 실측 0건 — 141B 학습 종료 후
+  `scripts/batch_decode_probe.py` 먼저 돌려 배수를 재고, 그다음 `eval_hard_tsc.py --batch-size N`
+  으로 heldout7 실측할 것. 작게(2~3)부터 시작 — 메모리 여유가 얇다.
+- **참고(사이드 발견)**: 이 8060 박스엔 `_resolve_egov()`가 찾는 `egovGeoportal` 경로가 없다 —
+  구성요소가 `twinspace_platform/sysadmin-front/src`로 리네임됐음(2026-07 리네임).
+  `EGOV_SRC=/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src` 지정 필요.
+
 ### 🧱 4060 한계 — `ho-admin-medit` 채점은 **8GB 벼랑**이라 비결정적 (2026-07-15 실측)
 - **증상**: heldout7 채점이 **traceback도 stderr도 없이 조용히 사망**(OS 킬). 지점이 매번 다르다
   (로딩 중 / mlist 직후 / medit 생성 중). **분리 프로세스(`Start-Process`)로 띄워도 동일** = 하니스 무관.
