@@ -21,6 +21,13 @@ models/*/scheduler.pt
 # 학습 데이터 (생성 가능하므로 제외)
 data/processed/
 
+# 어댑터 대용량 산출물 재발방지 — models/** 아래 checkpoint 외 최종본도 커밋 금지.
+# 실물은 git에 올리지 않고 외장하드로 직접 이관한다. (2026-08-01, GH 100MB 제한 반려 사고)
+# best-adapters/**는 기존 git-lfs 트래킹 대상이므로 이 규칙에서 제외한다.
+models/**/*.safetensors
+models/**/tokenizer.json
+*.gguf
+
 # 환경 설정
 .env
 *.local
