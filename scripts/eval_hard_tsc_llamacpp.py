@@ -107,9 +107,16 @@ def strip_fences(text):
     return text[m.start():].strip() if m else text.strip()
 
 
-def llama_completion(server_url, prompt, max_new, repeat_penalty=1.1, timeout=600):
+def llama_completion(server_url, prompt, max_new, repeat_penalty=1.1, timeout=None):
     """llama-server /completion 호출(그리디: temperature=0). 반환: (content, truncated, tokens_predicted).
-    truncated = stop_type == 'limit'  (eval_hard_tsc.py의 truncated=max_new 도달&EOS없음과 동치)."""
+    truncated = stop_type == 'limit'  (eval_hard_tsc.py의 truncated=max_new 도달&EOS없음과 동치).
+
+    ⚠ timeout 기본값은 max_new에서 동적 산출한다(2026-08-01 실사고: 고정 600s가 heldout7 최장
+    태스크 ho-admin-medit — 7314입력토큰 — 에서 TimeoutError로 하니스 전체를 죽였다. 72B에서
+    ~4 tok/s였는데, 141B/123B는 이보다 느릴 수 있어 고정값은 위험 — 0.33 tok/s(72B의 1/12)까지
+    버티도록 널널하게 잡는다). 필요시 --timeout으로 오버라이드 가능."""
+    if timeout is None:
+        timeout = max(1800, max_new * 3 + 600)
     body = {
         "prompt": prompt,
         "n_predict": max_new,
@@ -158,6 +165,9 @@ def main():
     ap.add_argument("--only", default="", help="쉼표구분 task 이름만 생성")
     ap.add_argument("--heldout", action="store_true", help="확장 held-out eval셋(heldout7)으로 생성")
     ap.add_argument("--repeat-penalty", type=float, default=1.1)
+    ap.add_argument("--timeout", type=int, default=None,
+                     help="/completion HTTP 타임아웃(초). 미지정시 max_new에서 동적 산출"
+                          "(max(1800, max_new*3+600)) — 대형모델 저속 디코드 대비.")
     ap.add_argument("--skip-health-wait", action="store_true")
     args = ap.parse_args()
 
@@ -183,8 +193,19 @@ def main():
         in_len_approx = len(prompt)  # 정확한 토큰 길이는 서버 토크나이저 몫 — 문자수만 로그용
 
         t0 = time.time()
-        raw, truncated, new_tokens = llama_completion(
-            args.server_url, prompt, args.max_new, repeat_penalty=args.repeat_penalty)
+        try:
+            raw, truncated, new_tokens = llama_completion(
+                args.server_url, prompt, args.max_new, repeat_penalty=args.repeat_penalty,
+                timeout=args.timeout)
+        except Exception as e:
+            # ★ 한 태스크 실패가 전체를 죽이지 않게(2026-08-01 실사고: ho-admin-medit
+            # TimeoutError로 하니스 전체가 죽어 이미 끝난 6개 결과의 label.json도 못 씀).
+            # 실패 태스크는 truncated=True(사실상 미완성)로 기록하고 다음 태스크로 계속.
+            dt = time.time() - t0
+            rows.append(dict(task=name, chars=0, truncated=True, new_tokens=0,
+                              gen_seconds=round(dt, 1), error=str(e)))
+            print(f"  FAILED    [{name:18s}] {type(e).__name__}: {e} ({dt:.1f}s)", flush=True)
+            continue
         dt = time.time() - t0
 
         src = strip_fences(raw)

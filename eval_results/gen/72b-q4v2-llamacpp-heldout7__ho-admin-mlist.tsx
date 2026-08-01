@@ -243,16 +243,11 @@ function EgovAdminMemberList(props: Props) {
             </colgroup>
             <tr>
               <th>No</th>
-              <th>ID</th>
-              <th>Name</th>
-              <th>User Group</th>
-              <th>Date Created</th>
-              <th>Status</th>
+              <th className="txt_cen">사용자ID</th>
+              <th className="txt_cen">사용자 명</th>
+              <th className="txt_cen">권한 그룹</th>
+              <th className="txt_cen">생성일</th>
+              <th className="txt_cen">사용자 상태</th>
             </tr>
             <tbody>{listTag}</tbody>
           </table>
-          <div className="num_wrap d_flex d_jcc aic">
-            <EgovPaging
-              pagination={paginationInfo}
-              moveToPage={(passedPage: number) => {
-                const
