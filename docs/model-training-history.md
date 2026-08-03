@@ -2,6 +2,7 @@
 
 > **목적**: 어떤 모델을 / 어느 환경·OS에서 / 어떤 설정으로 학습했을 때 **성공·실패**했는지의 실측 기록.
 > 추후 재현·의사결정의 근거. 2026-06 ~ 2026-07-19, 두 장비 협업(4060 shas / 8060 halo).
+> **📜 자동추출 원장 = `docs/training-history-master.md`** (학습 17건·채점 11건 전수, 로그 기반 근거).
 > 기술 정본=`CLAUDE.md`, 쉬운 설명=`docs/project-story-plain-ko.md`, 채점기 사건=`docs/decision-harness-v2-ko.md`.
 
 ---
