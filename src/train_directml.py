@@ -42,6 +42,7 @@ from transformers import (
 )
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, TaskType
+from peft.tuners.lora import LoraLayer  # 부착 검증용(HqqLoraLinear/Linear4bit 등도 전부 이 믹스인을 상속)
 from accelerate import init_empty_weights
 from accelerate.utils import set_module_tensor_to_device
 from safetensors import safe_open
@@ -321,8 +322,35 @@ def load_prequantized_4bit(model_path, compute_dtype, attn_impl=None):
     return model
 
 
+# ★ 2026-08-29 오진 수정: --lora-mlp가 붙이던 gate_proj/up_proj/down_proj는 Llama/Qwen류
+# dense MLP 명명이다. Mixtral(transformers 4.46.3)의 expert MLP는 fused 3D 파라미터가
+# 아니라 평범한 nn.Linear이고 이름이 w1/w2/w3다(MixtralBlockSparseTop2MLP 참조).
+# 이름이 안 맞으면 peft는 조용히 그 이름만 스킵한다(다른 이름이 하나라도 매치하면
+# 에러 없음) — "MoE라 못 붙는다"가 아니라 "이름을 안 줬다"였을 가능성이 실제 원인.
+MLP_TARGET_MODULES_BY_ARCH = {
+    "mixtral": ["w1", "w2", "w3"],              # MoE expert MLP (nn.Linear, 4.46.3 확인)
+}
+DEFAULT_MLP_TARGET_MODULES = ["gate_proj", "up_proj", "down_proj"]  # Llama/Qwen류 dense MLP
+
+
+def resolve_mlp_target_modules(model_path):
+    """모델 아키텍처(model_type)에 맞는 MLP LoRA 타깃 이름을 고른다.
+
+    자동탐지가 실패하면(설정 못 읽음 등) 기존 기본값(Qwen류)로 폴백해 하위호환을 지킨다.
+    """
+    try:
+        arch_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        model_type = getattr(arch_cfg, "model_type", "") or ""
+    except Exception as e:
+        log(f"⚠ --lora-mlp: model_type 조회 실패({e}) → 기본(gate/up/down_proj)로 폴백")
+        return DEFAULT_MLP_TARGET_MODULES
+    names = MLP_TARGET_MODULES_BY_ARCH.get(model_type, DEFAULT_MLP_TARGET_MODULES)
+    log(f"  --lora-mlp: model_type={model_type!r} → MLP 타깃={names}")
+    return names
+
+
 def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_impl=None,
-          quant="none", hqq_nbits=4, hqq_group_size=64):
+          quant="none", hqq_nbits=4, hqq_group_size=64, lora_mlp=False):
     log(f"모델 로드: {model_path} (dtype={dtype}"
         + (', 4bit-prequant(bnb)' if load_4bit else '')
         + (f', hqq-{hqq_nbits}bit-onthefly' if quant == "hqq" else '') + ")")
@@ -345,10 +373,17 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
             model, use_gradient_checkpointing=grad_ckpt)
 
     lc = config["lora"]
+    target_modules = list(lc["target_modules"])
+    mlp_names = []
+    if lora_mlp:
+        mlp_names = resolve_mlp_target_modules(model_path)
+        for m in mlp_names:
+            if m not in target_modules:
+                target_modules.append(m)
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=lc["r"], lora_alpha=lc["lora_alpha"],
-        target_modules=lc["target_modules"],
+        target_modules=target_modules,
         lora_dropout=lc["lora_dropout"], bias=lc["bias"],
     )
     model = get_peft_model(model, lora_config)
@@ -362,6 +397,38 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
     if grad_ckpt and not kbit:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
+
+    # 🔴 "붙였다"≠"붙었다" 검증(2026-08-29): named_modules를 실제로 훑어 요청한 타깃 이름이
+    # LoRA로 감싸진 서프릭스 집합에 실제로 나타나는지 확인한다. 존재확인(넣었다는 로그)이
+    # 아니라 사용확인(실제 매치돼 붙었는가)까지 봐야 141B 오진(이름불일치로 조용히 스킵)이
+    # 재발하지 않는다.
+    # ⚠️ 클래스명 문자열매칭(startswith("Lora")) 금지: hqq 경로는 HqqLoraLinear, bnb 4bit는
+    # Linear4bit처럼 "Lora"로 시작 안 하는 이름을 쓴다. 전부 LoraLayer를 상속하므로
+    # isinstance로 잡아야 quant=hqq/--load-4bit 경로에서도 조용히 놓치지 않는다.
+    lora_wrapped_suffixes = set()
+    expert_lora_count = 0
+    for n, m in model.named_modules():
+        if isinstance(m, LoraLayer):
+            lora_wrapped_suffixes.add(n.rsplit(".", 1)[-1])
+            if "experts" in n:
+                expert_lora_count += 1
+    log(f"  LoRA 부착 확인: 요청 target_modules={target_modules}")
+    log(f"  LoRA 부착 확인: 실제 부착된 서프릭스={sorted(lora_wrapped_suffixes)} "
+        f"| experts 경로 아래 LoRA 모듈 수={expert_lora_count}")
+    sample = [(n, type(m).__name__) for n, m in model.named_modules() if 'experts' in n][:20]
+    if sample:
+        log("  experts 경로 named_modules 샘플(최대 20개):")
+        for n, cls in sample:
+            log(f"    {n}  [{cls}]")
+    if lora_mlp:
+        missing = [m for m in mlp_names if m not in lora_wrapped_suffixes]
+        if missing:
+            raise RuntimeError(
+                f"🔴 --lora-mlp 지정했지만 MLP 타깃 {missing} 이 실제로 하나도 안 붙었다 "
+                f"(이름 불일치 의심 — 141B 8/1 본런과 같은 오진 재발 방지를 위해 즉시 중단). "
+                f"요청 target_modules={target_modules}, 실제 부착 서프릭스={sorted(lora_wrapped_suffixes)}"
+            )
+        log(f"  ✅ --lora-mlp 확인: {mlp_names} 전부 LoRA로 실제 부착됨(experts 모듈 수={expert_lora_count})")
 
     model.print_trainable_parameters()
     return model, tok
@@ -404,7 +471,9 @@ def main():
     ap.add_argument("--out", default="", help="출력 디렉터리 오버라이드(0=config)")
     ap.add_argument("--lora-r", type=int, default=0, help="LoRA r 오버라이드(0=config). α는 2r로 동반 조정")
     ap.add_argument("--lora-mlp", action="store_true",
-                    help="MLP(gate/up/down_proj)도 LoRA 타깃에 추가(capacity 확대)")
+                    help="MLP도 LoRA 타깃에 추가(capacity 확대). 이름은 아키텍처별 자동선택"
+                         "(mixtral=w1/w2/w3 expert, 그 외=gate/up/down_proj). "
+                         "실제 부착 안 되면 RuntimeError로 즉시 중단(조용한 스킵 방지)")
     ap.add_argument("--train-file", default="", help="train_file 오버라이드(빈값=config)")
     ap.add_argument("--base", default="", help="base_model 오버라이드(빈값=config). 14B 등 다른 베이스용")
     ap.add_argument("--epochs", type=int, default=0, help="num_train_epochs 오버라이드(0=config)")
@@ -444,12 +513,8 @@ def main():
     if args.lora_r > 0:
         config["lora"]["r"] = args.lora_r
         config["lora"]["lora_alpha"] = args.lora_r * 2
-    if args.lora_mlp:
-        tm = list(config["lora"]["target_modules"])
-        for m in ["gate_proj", "up_proj", "down_proj"]:
-            if m not in tm:
-                tm.append(m)
-        config["lora"]["target_modules"] = tm
+    # --lora-mlp의 실제 target_modules 이름은 모델 아키텍처(model_type)를 봐야 정할 수 있어
+    # build()로 넘긴다(mixtral=w1/w2/w3, 그 외=gate/up/down_proj). resolve_mlp_target_modules 참조.
     backend, device, dev_name, empty_cache, mem_used_gb = resolve_backend(args.backend)
 
     # dtype 해석 + 백엔드 호환 가드
@@ -478,7 +543,8 @@ def main():
                        load_4bit=args.load_4bit,
                        attn_impl=("eager" if args.attn_eager else None),
                        quant=args.quant, hqq_nbits=args.hqq_nbits,
-                       hqq_group_size=args.hqq_group_size)
+                       hqq_group_size=args.hqq_group_size,
+                       lora_mlp=args.lora_mlp)
 
     bs = tcfg["per_device_train_batch_size"]
     accum = tcfg["gradient_accumulation_steps"]
