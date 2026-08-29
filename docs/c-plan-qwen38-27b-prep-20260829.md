@@ -240,3 +240,21 @@ python scripts/eval_hard_tsc.py \
 🔴 **주의(PM 지시)**: 이 점수는 llama.cpp 경로 기존 점수(72B 64.7%·123B 12.2%·141B 10.7%·
 7B 70.5%)와 **직접 비교 불가**(파이프라인 다름). 표기 시 경로 명기, 비교는 이 3건
 안에서(어댑터 유 vs 무)만.
+
+## 7) 본런 완주 (2026-08-30 07:32, PM 확인)
+
+```
+78 steps, 총 13,686.8s(3.80h), 평균 171.3s/step (8-step 스모크 추정 3.87h와 거의 일치)
+step78 loss(avg8) 0.3849
+[epoch 1/2] val_loss 0.4744 → [epoch 2/2] val_loss 0.4324 (개선, 발산/붕괴 신호 없음)
+최종 어댑터: models/qwen38-27b-react-lora-v1/adapter_model.safetensors
+  190,172,032 bytes, 608 텐서(LoRA A/B × 304모듈)
+클린 종료(exit 0), wedge/reset 없음, GPU 정상.
+```
+PM 확인: val_loss 0.4324 = 캠페인 전체 1위(기존 1위 123B-v2 0.4642), 파라미터 1/4.5·
+어댑터크기 1/6·GPU시간 1/2.8로 달성. 단, **val_loss는 배포 성적 예측 못 함**(123B가 val
+2위 0.4704인데 실채점 12.2%였던 선례) — 채점이 진짜 판정, 축배는 채점 후.
+
+## 8) 채점 착수 — HF/PyTorch 경로(`eval_hard_tsc.py`), GPU 완전 회수 확인 후
+아래 절 계속 기록 예정(스모크 → 본채점 2건). 실행 커맨드는 6절 참조(--adapter 커밋
+3d4502e로 optional화 완료해 두 조건 비교 가능).
