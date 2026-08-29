@@ -51,7 +51,12 @@ training:
   save_steps: 25
   save_total_limit: 2
   bf16: true                          # ROCm/cuda 백엔드
-  gradient_checkpointing: false       # kbit(hqq) 경로는 prepare_model_for_kbit_training이 처리
+  gradient_checkpointing: true        # ⚠️ 이 yaml 키는 driver가 안 읽는다(장식용) — 실제 on/off는
+                                       # 반드시 CLI --grad-ckpt로 넘겨야 한다. prepare_model_for_kbit_training은
+                                       # use_gradient_checkpointing=grad_ckpt를 받아야만 켠다(자동 아님).
+                                       # 2026-08-30 스모크 1차: --grad-ckpt 누락 → HQQ dequant 텐서가
+                                       # backward까지 전부 살아있어 27B가 bf16 통짜(~55GB)로 상주,
+                                       # OOM(HIP out of memory, 55.36GiB). 반드시 --grad-ckpt 포함할 것.
   dataloader_num_workers: 0
   remove_unused_columns: false
 
@@ -68,5 +73,5 @@ quantization:
 
 # 실행 예시(--backend cuda, HQQ 4bit, 어텐션만 LoRA):
 #   python src/train_directml.py --config config/training_config_qwen38_27b.yaml \
-#     --backend cuda --dtype bf16 --quant hqq --hqq-nbits 4 --hqq-group-size 64 \
+#     --backend cuda --dtype bf16 --quant hqq --hqq-nbits 4 --hqq-group-size 64 --grad-ckpt \
 #     --smoke 8   # ← 반드시 먼저 8-step 스모크로 s/step 실측 후 본런 여부 판단

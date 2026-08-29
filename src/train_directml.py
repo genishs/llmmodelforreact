@@ -447,10 +447,17 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
 
     # gradient checkpointing: DirectML에서는 재계산이 캐싱 할당자에 버퍼를 더 쌓아
     # 오히려 VRAM 증가를 가속 → 기본 비활성.
-    # kbit(4bit/hqq) 경로는 prepare_model_for_kbit_training이 이미 grad-ckpt를 처리하므로 재적용 안 함.
+    # kbit(4bit/hqq) 경로는 위 prepare_model_for_kbit_training(use_gradient_checkpointing=grad_ckpt)
+    # 호출 시점에 이미 처리됐다(grad_ckpt=True일 때만 실제로 켜짐 — 자동으로 켜지는 게 아니라
+    # 이 인자를 통해서만 켜진다. 2026-08-30 C안 스모크에서 --grad-ckpt를 안 넘겨 이 값이 False로
+    # 흘러들어가 꺼진 채 돌았고, HQQ가 forward마다 4bit→bf16으로 되푼 텐서가 grad-ckpt 없이는
+    # backward를 위해 레이어 깊이만큼 전부 살아있어 27B가 사실상 bf16 통짜(~55GB)로 상주 →
+    # OOM. 반드시 --grad-ckpt를 넘길 것 — 아래에서 실제로 켜졌는지 로그로 확인한다).
     if grad_ckpt and not kbit:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
+    gc_flag = getattr(model, "is_gradient_checkpointing", None)
+    log(f"  gradient checkpointing: 요청={grad_ckpt} | 실제 켜짐 확인(is_gradient_checkpointing)={gc_flag}")
 
     # 🔴 "붙였다"≠"붙었다" 검증(2026-08-29): named_modules를 실제로 훑어 요청한 타깃 이름이
     # LoRA로 감싸진 서프릭스 집합에 실제로 나타나는지 확인한다. 존재확인(넣었다는 로그)이
@@ -459,18 +466,25 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
     # ⚠️ 클래스명 문자열매칭(startswith("Lora")) 금지: hqq 경로는 HqqLoraLinear, bnb 4bit는
     # Linear4bit처럼 "Lora"로 시작 안 하는 이름을 쓴다. 전부 LoraLayer를 상속하므로
     # isinstance로 잡아야 quant=hqq/--load-4bit 경로에서도 조용히 놓치지 않는다.
+    import collections
     lora_wrapped_suffixes = set()
+    lora_suffix_counts = collections.Counter()  # 서프릭스별 부착 개수(2026-08-30: 하이브리드 아키텍처
+    # 재확인용 — Qwen3.8-27B는 64레이어 중 48개가 linear_attention이라 in_proj_*/out_proj가
+    # q/k/v/o_proj보다 훨씬 많이 붙어야 정상. 총개수만으로는 이 비율을 확인할 수 없어 이름별로 센다.
     lora_module_total = 0  # distinct LoraLayer 인스턴스 총 개수(서프릭스 종류 수와 다름 — 레이어별로 반복 부착됨)
     expert_lora_count = 0
     for n, m in model.named_modules():
         if isinstance(m, LoraLayer):
-            lora_wrapped_suffixes.add(n.rsplit(".", 1)[-1])
+            suf = n.rsplit(".", 1)[-1]
+            lora_wrapped_suffixes.add(suf)
+            lora_suffix_counts[suf] += 1
             lora_module_total += 1
             if "experts" in n:
                 expert_lora_count += 1
     log(f"  LoRA 부착 확인: 요청 target_modules={target_modules}")
     log(f"  LoRA 부착 확인: 실제 부착된 서프릭스={sorted(lora_wrapped_suffixes)} "
         f"| LoRA 모듈 총 개수={lora_module_total} | experts 경로 아래 LoRA 모듈 수={expert_lora_count}")
+    log(f"  LoRA 부착 확인: 서프릭스별 개수={dict(sorted(lora_suffix_counts.items()))}")
     sample = [(n, type(m).__name__) for n, m in model.named_modules() if 'experts' in n][:20]
     if sample:
         log("  experts 경로 named_modules 샘플(최대 20개):")
