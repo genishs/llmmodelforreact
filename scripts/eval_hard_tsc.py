@@ -187,7 +187,14 @@ def build_model(adapter, base=None, base_load="4bit", quant="none", hqq_nbits=4,
         dtype = torch.bfloat16 if base_load == "bf16" else torch.float16
         model = AutoModelForCausalLM.from_pretrained(
             base, torch_dtype=dtype, device_map="auto", trust_remote_code=True)
-    model = PeftModel.from_pretrained(model, str(ROOT / adapter))
+    # ★ 2026-08-30(C안 무어댑터 채점 대비): --adapter를 생략하면 base 모델 단독(No-LoRA)으로
+    # 채점한다. 이전에는 --adapter가 required=True + PeftModel.from_pretrained가 무조건
+    # 호출돼 base-only 채점이 아예 불가능했다(같은 HF 파이프라인 안에서 어댑터 유/무를
+    # 비교하려면 반드시 필요한 경로인데 빠져 있었음 — PM 지시로 발견/추가).
+    if adapter:
+        model = PeftModel.from_pretrained(model, str(ROOT / adapter))
+    else:
+        print("[build_model] --adapter 미지정 → base 모델 단독(No-LoRA) 채점", flush=True)
     model.eval()
     return tok, model
 
@@ -265,7 +272,9 @@ def egov_inputs_meta(_META_TASKS=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--adapter", required=True)
+    ap.add_argument("--adapter", default="",
+                    help="LoRA 어댑터 경로. 생략하면 base 모델 단독(No-LoRA) 채점"
+                         "(2026-08-30 추가 — 이전엔 required였음).")
     ap.add_argument("--label", required=True)
     ap.add_argument("--max-new", type=int, default=2048)  # 1024는 egov-download(최장) 잘림 → 부당감점. 2048 헤드룸.
     ap.add_argument("--only", default="", help="쉼표구분 task 이름만 측정(잘림검증 등 단일태스크용)")
