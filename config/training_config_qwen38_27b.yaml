@@ -1,0 +1,70 @@
+# Qwen3.8-27B (Qwen3_5 하이브리드 아키텍처) LoRA Fine-tuning — C안
+# ⚠️ 미검증 초안(오선생 2026-08-29 작성) — 실제 GPU 스모크 전까지 s/step·메모리 수치는 추정치.
+#
+# 🔴 target_modules 주의: Qwen3.8-27B는 model_type=qwen3_5, 64 레이어 중
+#   full_attention_interval=4 → 16개만 full_attention(q_proj/k_proj/v_proj/o_proj),
+#   나머지 48개(75%)는 linear_attention(게이트 선형어텐션, in_proj_qkv/in_proj_z/
+#   in_proj_a/in_proj_b/out_proj 이름 사용). 기존 7B/14B/32B용 q/k/v/o_proj만 쓰면
+#   레이어의 25%만 LoRA가 붙는다 — 반드시 아래 9종 전체를 넣을 것.
+#   (실측: tiny 4-layer synthetic model에서 CPU forward+backward로 검증됨 — 오선생 2026-08-29)
+#
+# 🔴 로더 주의(train_directml.py 수정 필요, 이 커밋엔 미반영):
+#   체크포인트 텐서명은 model.language_model.layers.*  (VL 전체 체크포인트 원본명)
+#   Qwen3_5ForCausalLM(텍스트 전용) 파라미터명은 model.layers.*  (language_model 접두어 없음)
+#   → stream_load_to_device/load_hqq_onthefly에 prefix remap
+#     (model.language_model.→model., model.visual.*·mtp.* 스킵) 필요.
+#   미수정 상태로 실행하면 "적재 안 된 meta 텐서" RuntimeError로 즉시 실패(안전하게 fail-fast).
+
+model:
+  base_model: "/run/media/user/sgshs_data/ai_model_fast/qwen3.8-27b"
+  model_type: "causal_lm"
+
+lora:
+  r: 16
+  lora_alpha: 32
+  target_modules:
+    # full_attention 레이어(16/64)
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    # linear_attention 레이어(48/64, 게이트 선형어텐션)
+    - "in_proj_qkv"
+    - "in_proj_z"
+    - "in_proj_a"
+    - "in_proj_b"
+    - "out_proj"
+  lora_dropout: 0.05
+  bias: "none"
+
+training:
+  output_dir: "./models/qwen38-27b-react-lora-v1"
+  num_train_epochs: 2                # 32B HQQ4bit 레퍼런스와 동일(78 step 재현 목적)
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8      # 실질 batch_size = 8
+  learning_rate: 1.0e-4               # 32B 레퍼런스 LR 재사용(27B 미검증 — 스모크 loss 궤적으로 확인)
+  warmup_ratio: 0.03
+  lr_scheduler_type: "cosine"
+  logging_steps: 10
+  save_steps: 25
+  save_total_limit: 2
+  bf16: true                          # ROCm/cuda 백엔드
+  gradient_checkpointing: false       # kbit(hqq) 경로는 prepare_model_for_kbit_training이 처리
+  dataloader_num_workers: 0
+  remove_unused_columns: false
+
+data:
+  train_file: "./data/processed/react_train.jsonl"   # 기존 351건 그대로(증량 금지 — 앜선생 조사: 증량 시 회귀)
+  val_file: "./data/processed/react_val.jsonl"
+  max_seq_length: 1024                                 # 32B 레퍼런스와 동일 seq
+  dataset_text_field: "text"
+
+quantization:
+  method: "hqq"                       # bitsandbytes 아님(gfx1151 wave32/64 이력 + torch2.10 cpp ext 비활성 확인됨)
+  hqq_nbits: 4
+  hqq_group_size: 64
+
+# 실행 예시(--backend cuda, HQQ 4bit, 어텐션만 LoRA):
+#   python src/train_directml.py --config config/training_config_qwen38_27b.yaml \
+#     --backend cuda --dtype bf16 --quant hqq --hqq-nbits 4 --hqq-group-size 64 \
+#     --smoke 8   # ← 반드시 먼저 8-step 스모크로 s/step 실측 후 본런 여부 판단
