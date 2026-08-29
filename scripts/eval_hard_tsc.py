@@ -38,26 +38,33 @@ BASE = str(ROOT / "models" / "base" / "qwen2.5-coder-7b")
 
 def _resolve_egov():
     """egov 실파일 소스 루트. 장비마다 sibling 체크아웃 위치가 달라 후보 탐색 + $EGOV_SRC 오버라이드.
-    Linux(ROCm 8060) sibling: .../twinspace_platform/egovGeoportal/src, Windows 원본: d:/...
 
-    ⚠ CANONICAL TREE — 8060 박스에는 egov 소스 트리가 ≥3개 존재한다:
-      - twinspace_platform/egovGeoportal/src  ← 정본(84 jsx). eval이 실제로 쓰는 트리.
-      - study/egovframe-template-simple-react/src  ← 다른 템플릿(77 jsx). eval 미사용. 절대 아님.
-      - twinspace_platform/egovGeoportal/node_modules/egovframe-template-simple-react ← 패키지 사본, 무관.
+    ⚠ CANONICAL TREE 정정(2026-08-30, PM 대조 확인): 아래 예전 주석/후보들은 폴더명이
+    "egovGeoportal"이라 되어 있었으나, **실제 정본은 "sysadmin-front"다** — run_eval_gguf.sh/
+    run_eval_gguf_nolora.sh가 쓰고 7B·72B·123B·141B 채점이 전부 이 트리로 나왔다:
+      정본: .../twinspace_platform/sysadmin-front/src  (84 jsx, 193 파일)
+    "egovGeoportal" 이름의 트리(예: 외장 백업 마운트에 있는 사본)는 heldout7 앵커 7개는
+    바이트동일이지만 비앵커 파일(EgovHeader.jsx 등 레이아웃, catalog 페이지 유무)이 달라
+    tsc의 import 해석·TS2304류 오류수가 갈릴 수 있다(2026-08-30 실제 대조로 확인) —
+    apples-to-oranges 스코어링 방지를 위해 정본을 최우선 후보로 둔다.
     잘못된 트리를 잡으면 실제로 존재하는 파일을 "없다"고 오탐하거나(또는 그 반대) apples-to-oranges
     스코어링이 나온다(2026-07-16/17 겪은 실제 사고). 양 노드가 반드시 같은 트리를 보도록
     EGOV_SRC 를 명시적으로 export 하는 걸 강력 권장:
-      export EGOV_SRC="/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"  (Linux/8060)
-      set EGOV_SRC=d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src                              (Windows)
+      export EGOV_SRC="/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src"  (Linux, 정본)
+      set EGOV_SRC=d:/Documents/workspace/TwinSpace-platform/sysadmin-front/src               (Windows)
     """
     import os
     cands = []
     if os.environ.get("EGOV_SRC"):
         cands.append(Path(os.environ["EGOV_SRC"]))
     cands += [
-        ROOT.parent.parent / "twinspace_platform" / "egovGeoportal" / "src",  # study/.. sibling
+        ROOT.parent.parent / "twinspace_platform" / "sysadmin-front" / "src",  # 정본(study/.. sibling)
+        Path("/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src"),  # 정본(절대경로)
+        Path("/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/sysadmin-front/src"),
+        Path("d:/Documents/workspace/TwinSpace-platform/sysadmin-front/src"),
+        # 구 후보(폴더명 오기 "egovGeoportal") — 정본 탐색 실패 시에만 최후 폴백, 사용 시 로그로 경고.
+        ROOT.parent.parent / "twinspace_platform" / "egovGeoportal" / "src",
         Path("/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"),
-        Path("d:/Documents/workspace/TwinSpace-platform/egovGeoportal/src"),
     ]
     resolved = None
     for c in cands:
@@ -88,7 +95,7 @@ def _resolve_egov():
             f"  resolved egov = {resolved}\n"
             f"  missing anchors ({len(missing)}/{len(_heldout7_anchors)}): {missing}\n"
             "  → EGOV_SRC 환경변수로 정본 트리를 명시적으로 지정하세요, 예:\n"
-            '     export EGOV_SRC="/run/media/user/새 볼륨/Documents/workspace/twinspace_platform/egovGeoportal/src"'
+            '     export EGOV_SRC="/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src"  (정본)'
         )
     return resolved
 
