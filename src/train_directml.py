@@ -91,6 +91,69 @@ def load_config(path="./config/training_config.yaml"):
         return yaml.safe_load(f)
 
 
+# ★ 2026-08-30 (C안, Qwen3.8-27B): VLM(비전-언어) 체크포인트는 텐서명이
+# model.language_model.*/model.visual.*/mtp.* 인데, AutoModelForCausalLM.from_config가
+# 만드는 텍스트전용 클래스(예: Qwen3_5ForCausalLM)의 파라미터명은 model.*(language_model
+# 접두어 없음)이고 vision/mtp 서브모듈 자체가 없다. 리매핑 없이 그대로 넘기면 텍스트 백본이
+# 통째로 안 실린다(다행히 아래 "적재 안 된 meta 텐서" 체크가 있어 조용한 손상이 아니라
+# 즉시 RuntimeError로 fail-fast — 그래도 GPU에서 시도하면 로드 시간을 낭비하게 됨).
+# 오선생 2026-08-29 검증: 합성 Qwen3_5 체크포인트로 이 리매핑을 실제 실행해 100% 적재 +
+# reference forward logits와 완전 일치(allclose, max diff 0.0) 확인.
+#
+# ⚠️ 하위호환: Qwen2.5/Mixtral 등 순수 텍스트 체크포인트는 애초에 "model.language_model."
+# 접두어가 존재하지 않으므로 이 리매핑은 데이터 기반 no-op이다(하드코딩 모델명 분기가 아니라
+# 텐서명 패턴으로 판단 — 기존 경로에 영향 없음).
+_VLM_TEXT_PREFIX = "model.language_model."
+_VLM_SKIP_PREFIXES = ("model.visual.", "mtp.")
+
+
+def remap_checkpoint_key(name):
+    """체크포인트 텐서명 → 텍스트전용 CausalLM 모델의 파라미터/버퍼명.
+
+    비전타워·MTP 헤드처럼 텍스트전용 모델에 대응 모듈이 없는 텐서는 None(스킵)을 반환한다.
+    """
+    if name.startswith(_VLM_SKIP_PREFIXES):
+        return None
+    if name.startswith(_VLM_TEXT_PREFIX):
+        return "model." + name[len(_VLM_TEXT_PREFIX):]
+    return name
+
+
+def build_checkpoint_key_maps(model_path):
+    """체크포인트 텐서명 ↔ 모델 파라미터명 매핑 + 텐서명→샤드경로(ckpt명 기준)를 만든다.
+
+    반환: (ckpt_to_model, model_to_ckpt, shard_of)
+      - ckpt_to_model: {체크포인트텐서명: 모델파라미터명} — 텍스트 백본에 대응하는 것만(1:1)
+      - model_to_ckpt: 위의 역매핑
+      - shard_of: {체크포인트텐서명: 절대경로} — safe_open은 항상 체크포인트명으로 열어야 함
+    """
+    idx = os.path.join(model_path, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        with open(idx, "r", encoding="utf-8") as f:
+            wmap = json.load(f)["weight_map"]
+        ckpt_and_shard = [(n, os.path.join(model_path, s)) for n, s in wmap.items()]
+    else:
+        shard = sorted(glob.glob(os.path.join(model_path, "*.safetensors")))[0]
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            ckpt_and_shard = [(n, shard) for n in f.keys()]
+
+    ckpt_to_model, shard_of = {}, {}
+    skipped = 0
+    for n, s in ckpt_and_shard:
+        mkey = remap_checkpoint_key(n)
+        if mkey is None:
+            skipped += 1
+            continue
+        ckpt_to_model[n] = mkey
+        shard_of[n] = s
+    if skipped:
+        log(f"  VLM 체크포인트 감지: 비전/MTP 텐서 {skipped}개 스킵(텍스트 백본만 로드)")
+    model_to_ckpt = {m: n for n, m in ckpt_to_model.items()}
+    if len(model_to_ckpt) != len(ckpt_to_model):
+        raise RuntimeError("체크포인트 키 리매핑 충돌(1:1 아님) — remap_checkpoint_key 로직 점검 필요")
+    return ckpt_to_model, model_to_ckpt, shard_of
+
+
 def stream_load_to_device(model_path, device, dtype):
     """safetensors 텐서를 지정 dtype으로 변환해 DirectML 디바이스에 직접 적재.
 
@@ -105,28 +168,22 @@ def stream_load_to_device(model_path, device, dtype):
         model = AutoModelForCausalLM.from_config(cfg, torch_dtype=dtype)
     model.tie_weights()  # 묶인 가중치(예: lm_head=embed) 연결
 
-    # 텐서 → shard 매핑 (index 있으면 사용, 없으면 단일 파일)
-    idx = os.path.join(model_path, "model.safetensors.index.json")
-    if os.path.exists(idx):
-        with open(idx, "r", encoding="utf-8") as f:
-            wmap = json.load(f)["weight_map"]
-        items = [(n, os.path.join(model_path, s)) for n, s in wmap.items()]
-    else:
-        shard = sorted(glob.glob(os.path.join(model_path, "*.safetensors")))[0]
-        with safe_open(shard, framework="pt", device="cpu") as f:
-            items = [(n, shard) for n in f.keys()]
+    # 텐서 → shard 매핑 (index 있으면 사용, 없으면 단일 파일). VLM 체크포인트는
+    # ckpt_name(model.language_model.*)과 model_name(model.*)이 다를 수 있음(위 build_checkpoint_key_maps).
+    ckpt_to_model, _model_to_ckpt, shard_of = build_checkpoint_key_maps(model_path)
+    items = [(ckpt_name, model_name, shard_of[ckpt_name]) for ckpt_name, model_name in ckpt_to_model.items()]
 
     log(f"  {len(items)} tensors 스트리밍 적재 시작 (host RAM 가용 {ram_avail_gb():.1f}GB)")
     loaded, t0 = 0, time.time()
-    for name, shard in items:
+    for ckpt_name, model_name, shard in items:
         if ram_avail_gb() < RAM_GUARD_GB:
             raise MemoryError(
                 f"가용 RAM {ram_avail_gb():.2f}GB < {RAM_GUARD_GB}GB 가드. "
                 f"다른 앱을 닫고 재시도하세요(스왑 프리징 방지)."
             )
         with safe_open(shard, framework="pt", device="cpu") as f:
-            t = f.get_tensor(name).to(dtype)  # host 변환 (텐서 1개분 피크)
-        set_module_tensor_to_device(model, name, device, value=t)
+            t = f.get_tensor(ckpt_name).to(dtype)  # host 변환 (텐서 1개분 피크)
+        set_module_tensor_to_device(model, model_name, device, value=t)
         del t
         loaded += 1
         if loaded % 50 == 0:
@@ -182,22 +239,16 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
         model = AutoModelForCausalLM.from_config(cfg, torch_dtype=compute_dtype)
     model.tie_weights()
 
-    # 텐서 → shard 매핑 (stream_load_to_device와 동일한 규칙)
-    idx = os.path.join(model_path, "model.safetensors.index.json")
-    if os.path.exists(idx):
-        with open(idx, "r", encoding="utf-8") as f:
-            wmap = json.load(f)["weight_map"]
-        shard_of = {n: os.path.join(model_path, s) for n, s in wmap.items()}
-    else:
-        shard = sorted(glob.glob(os.path.join(model_path, "*.safetensors")))[0]
-        with safe_open(shard, framework="pt", device="cpu") as f:
-            shard_of = {n: shard for n in f.keys()}
+    # 텐서 → shard 매핑 (stream_load_to_device와 동일한 규칙). VLM 체크포인트는 ckpt_name과
+    # model_name이 다를 수 있으므로 model_to_ckpt로 역조회한다(build_checkpoint_key_maps 참조).
+    ckpt_to_model, model_to_ckpt, shard_of = build_checkpoint_key_maps(model_path)
 
     qcfg_template = BaseQuantizeConfig(nbits=nbits, group_size=group_size, axis=1)
 
     # 1) 양자화 대상 Linear 수집(메타 트리 순회 — 아직 가중치 없음, 구조/shape만 필요).
+    #    아래 full은 항상 모델 파라미터명 기준(named_children으로 실제 모델을 순회하므로).
     targets = []  # (parent_module, attr_name, child_module, dotted_name)
-    quant_tensor_names = set()
+    quant_tensor_names = set()  # 모델 파라미터명 기준
 
     def _collect(module, prefix=""):
         for name, child in list(module.named_children()):
@@ -205,7 +256,7 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
             if isinstance(child, torch.nn.Linear) and not any(s in full for s in skip):
                 targets.append((module, name, child, full))
                 quant_tensor_names.add(f"{full}.weight")
-                if f"{full}.bias" in shard_of:
+                if f"{full}.bias" in model_to_ckpt:
                     quant_tensor_names.add(f"{full}.bias")
             else:
                 _collect(child, full)
@@ -217,8 +268,9 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
     # 2) 비양자화 텐서(embedding/norm/skip Linear 등)는 기존처럼 텐서 1개씩 device로 스트리밍.
     t0 = time.time()
     loaded = 0
-    for name, shard in shard_of.items():
-        if name in quant_tensor_names:
+    for ckpt_name, shard in shard_of.items():
+        model_name = ckpt_to_model[ckpt_name]
+        if model_name in quant_tensor_names:
             continue
         if ram_avail_gb() < RAM_GUARD_GB:
             raise MemoryError(
@@ -226,8 +278,8 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
                 f"다른 앱을 닫고 재시도하세요(스왑 프리징 방지)."
             )
         with safe_open(shard, framework="pt", device="cpu") as f:
-            t = f.get_tensor(name).to(compute_dtype)
-        set_module_tensor_to_device(model, name, device, value=t)
+            t = f.get_tensor(ckpt_name).to(compute_dtype)
+        set_module_tensor_to_device(model, model_name, device, value=t)
         del t
         loaded += 1
         if loaded % 50 == 0:
@@ -242,16 +294,18 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
             raise MemoryError(
                 f"가용 RAM {ram_avail_gb():.2f}GB < {RAM_GUARD_GB}GB 가드(HQQ 양자화 중, {full})."
             )
-        with safe_open(shard_of[f"{full}.weight"], framework="pt", device="cpu") as f:
-            w = f.get_tensor(f"{full}.weight").to(compute_dtype)
+        ckpt_weight_name = model_to_ckpt[f"{full}.weight"]
+        with safe_open(shard_of[ckpt_weight_name], framework="pt", device="cpu") as f:
+            w = f.get_tensor(ckpt_weight_name).to(compute_dtype)
         has_bias = f"{full}.bias" in quant_tensor_names
         shell = torch.nn.Linear(child.in_features, child.out_features, bias=has_bias,
                                  device=device, dtype=compute_dtype)
         shell.weight.data.copy_(w.to(device))
         del w
         if has_bias:
-            with safe_open(shard_of[f"{full}.bias"], framework="pt", device="cpu") as f:
-                b = f.get_tensor(f"{full}.bias").to(compute_dtype)
+            ckpt_bias_name = model_to_ckpt[f"{full}.bias"]
+            with safe_open(shard_of[ckpt_bias_name], framework="pt", device="cpu") as f:
+                b = f.get_tensor(ckpt_bias_name).to(compute_dtype)
             shell.bias.data.copy_(b.to(device))
             del b
         hqq_layer = HQQLinear(shell, quant_config=qcfg_template, compute_dtype=compute_dtype,
@@ -406,29 +460,39 @@ def build(model_path, device, config, dtype, grad_ckpt, load_4bit=False, attn_im
     # Linear4bit처럼 "Lora"로 시작 안 하는 이름을 쓴다. 전부 LoraLayer를 상속하므로
     # isinstance로 잡아야 quant=hqq/--load-4bit 경로에서도 조용히 놓치지 않는다.
     lora_wrapped_suffixes = set()
+    lora_module_total = 0  # distinct LoraLayer 인스턴스 총 개수(서프릭스 종류 수와 다름 — 레이어별로 반복 부착됨)
     expert_lora_count = 0
     for n, m in model.named_modules():
         if isinstance(m, LoraLayer):
             lora_wrapped_suffixes.add(n.rsplit(".", 1)[-1])
+            lora_module_total += 1
             if "experts" in n:
                 expert_lora_count += 1
     log(f"  LoRA 부착 확인: 요청 target_modules={target_modules}")
     log(f"  LoRA 부착 확인: 실제 부착된 서프릭스={sorted(lora_wrapped_suffixes)} "
-        f"| experts 경로 아래 LoRA 모듈 수={expert_lora_count}")
+        f"| LoRA 모듈 총 개수={lora_module_total} | experts 경로 아래 LoRA 모듈 수={expert_lora_count}")
     sample = [(n, type(m).__name__) for n, m in model.named_modules() if 'experts' in n][:20]
     if sample:
         log("  experts 경로 named_modules 샘플(최대 20개):")
         for n, cls in sample:
             log(f"    {n}  [{cls}]")
+
+    # 🔴 2026-08-30(C안) 확장: --lora-mlp 여부와 무관하게, 요청한 target_modules 전체가
+    # 실제로 하나 이상 붙었는지 검증한다. Qwen3.8-27B처럼 레이어의 75%가 다른 이름
+    # (in_proj_qkv/z/a/b, out_proj)을 쓰는 하이브리드 아키텍처에서 이름 하나만 빠져도
+    # 조용히 스킵될 수 있으므로, attention 타깃도 mlp 타깃과 동일한 엄격도로 검사한다.
+    requested_all = set(target_modules)
+    missing_all = sorted(requested_all - lora_wrapped_suffixes)
+    if missing_all:
+        raise RuntimeError(
+            f"🔴 LoRA target_modules {missing_all} 이 실제로 하나도 안 붙었다 "
+            f"(이름 불일치 의심 — 141B 8/1류 오진 재발 방지를 위해 즉시 중단). "
+            f"요청 target_modules={target_modules}, 실제 부착 서프릭스={sorted(lora_wrapped_suffixes)}"
+        )
+    log(f"  ✅ LoRA target_modules 전부 실제 부착 확인: {sorted(requested_all)} "
+        f"(부착 모듈 총 개수={lora_module_total})")
     if lora_mlp:
-        missing = [m for m in mlp_names if m not in lora_wrapped_suffixes]
-        if missing:
-            raise RuntimeError(
-                f"🔴 --lora-mlp 지정했지만 MLP 타깃 {missing} 이 실제로 하나도 안 붙었다 "
-                f"(이름 불일치 의심 — 141B 8/1 본런과 같은 오진 재발 방지를 위해 즉시 중단). "
-                f"요청 target_modules={target_modules}, 실제 부착 서프릭스={sorted(lora_wrapped_suffixes)}"
-            )
-        log(f"  ✅ --lora-mlp 확인: {mlp_names} 전부 LoRA로 실제 부착됨(experts 모듈 수={expert_lora_count})")
+        log(f"  ✅ --lora-mlp 확인: {mlp_names} 포함 전부 LoRA로 실제 부착됨(experts 모듈 수={expert_lora_count})")
 
     model.print_trainable_parameters()
     return model, tok

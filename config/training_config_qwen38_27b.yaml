@@ -1,22 +1,24 @@
 # Qwen3.8-27B (Qwen3_5 하이브리드 아키텍처) LoRA Fine-tuning — C안
-# ⚠️ 미검증 초안(오선생 2026-08-29 작성) — 실제 GPU 스모크 전까지 s/step·메모리 수치는 추정치.
+# ⚠️ 2026-08-30: 로더 패치(prefix remap) 적용 완료, CPU 합성모델 e2e 검증 통과.
+#   실 27B 가중치 기준 s/step·GTT는 8-step 스모크로 실측 예정(본런 전 필수, PM 승인 후 진행).
 #
 # 🔴 target_modules 주의: Qwen3.8-27B는 model_type=qwen3_5, 64 레이어 중
 #   full_attention_interval=4 → 16개만 full_attention(q_proj/k_proj/v_proj/o_proj),
 #   나머지 48개(75%)는 linear_attention(게이트 선형어텐션, in_proj_qkv/in_proj_z/
 #   in_proj_a/in_proj_b/out_proj 이름 사용). 기존 7B/14B/32B용 q/k/v/o_proj만 쓰면
 #   레이어의 25%만 LoRA가 붙는다 — 반드시 아래 9종 전체를 넣을 것.
-#   (실측: tiny 4-layer synthetic model에서 CPU forward+backward로 검증됨 — 오선생 2026-08-29)
+#   (실측: synthetic 8-layer 하이브리드 모델에서 CPU forward+backward로 검증됨 — 오선생 2026-08-29/30)
 #
-# 🔴 로더 주의(train_directml.py 수정 필요, 이 커밋엔 미반영):
-#   체크포인트 텐서명은 model.language_model.layers.*  (VL 전체 체크포인트 원본명)
-#   Qwen3_5ForCausalLM(텍스트 전용) 파라미터명은 model.layers.*  (language_model 접두어 없음)
-#   → stream_load_to_device/load_hqq_onthefly에 prefix remap
-#     (model.language_model.→model., model.visual.*·mtp.* 스킵) 필요.
-#   미수정 상태로 실행하면 "적재 안 된 meta 텐서" RuntimeError로 즉시 실패(안전하게 fail-fast).
+# 🔴 로더 패치 적용 완료(train_directml.py, 2026-08-30):
+#   체크포인트 텐서명 model.language_model.layers.* (VL 전체 체크포인트 원본명) →
+#   Qwen3_5ForCausalLM(텍스트 전용) 파라미터명 model.layers.*(language_model 접두어 없음)로
+#   remap_checkpoint_key()/build_checkpoint_key_maps()가 자동 변환, model.visual.*·mtp.*는 스킵.
+#   Qwen2.5/Mixtral 등 기존 체크포인트는 이 접두어 자체가 없어 identity(no-op) — 하위호환 실측 확인.
+#   build()의 LoRA 부착검증도 확장: target_modules 전체(9종)가 실제로 붙었는지 isinstance(LoraLayer)
+#   기반으로 검사, 하나라도 안 붙으면 즉시 RuntimeError(조용한 스킵 방지).
 
 model:
-  base_model: "/run/media/user/sgshs_data/ai_model_fast/qwen3.8-27b"
+  base_model: "/run/media/user/새 볼륨/ai_model/models/base/qwen3.8-27b"  # 2026-08-30: 2TB 아카이브로 이전(PM), 바이트 대조 완료
   model_type: "causal_lm"
 
 lora:
