@@ -258,3 +258,23 @@ PM 확인: val_loss 0.4324 = 캠페인 전체 1위(기존 1위 123B-v2 0.4642), 
 ## 8) 채점 착수 — HF/PyTorch 경로(`eval_hard_tsc.py`), GPU 완전 회수 확인 후
 아래 절 계속 기록 예정(스모크 → 본채점 2건). 실행 커맨드는 6절 참조(--adapter 커밋
 3d4502e로 optional화 완료해 두 조건 비교 가능).
+
+## 9) 🔴 egov 정본 트리 경로 정정 (PM 대조, 2026-08-30)
+
+- 내가 처음 스모크에 쓴 트리(`/run/media/user/data/mini-sgshs/.../egovGeoportal/src`)는
+  heldout7 **앵커 7개는 바이트동일**이지만, PM이 기존 7B/72B/123B/141B 채점이 전부 써온
+  **정본**(`/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src`)과
+  비앵커 파일 일부가 다름(EgovHeader.jsx·EgovLeftNavAdmin.jsx 내용 다름,
+  EgovAdminCatalogEdit/List.jsx 정본에만 존재). tsc가 트리 전체를 훑어 import를
+  해석하므로 비앵커 파일 차이가 TS2304류 오류수에 영향 가능 — apples-to-oranges 위험.
+- **스모크(ho-select)는 앵커 동일이라 그대로 완주**(PM 지시, 속도측정·generate() 정합성
+  확인 목적은 유효). **본채점 2회(어댑터 유/무)는 반드시 정본 경로**로 진행.
+- 부수 발견: `scripts/eval_hard_tsc.py`의 `_resolve_egov()` 후보 경로 전부가 잘못된
+  폴더명("egovGeoportal")이었다(코드 주석에도 이게 "정본"이라 잘못 기재돼 있었음) —
+  `EGOV_SRC` 미지정 시 스스로 틀린 트리를 정본으로 착각해 찾아가는 구조. **수정
+  완료(커밋 f4efd4e)**: 후보 최우선순위를 `sysadmin-front`(정본)로 교체, `egovGeoportal`은
+  구경로 최후 폴백 유지. `EGOV_SRC` 미설정 상태에서 독립 실행해 정본 자동해석 확인.
+- **본채점 실행 시 반드시**: `export EGOV_SRC=/mnt/data/Documents/workspace/twinspace_platform/sysadmin-front/src`
+  (내장 SSD라 8TB USB보다도 빠름 — tsc 트리 스캔에 이득).
+- 보고 표기 규칙: 스모크는 egovGeoportal(대체) 트리, 본채점 2건은 sysadmin-front(정본)
+  트리 — **표에 경로를 명기**할 것(PM 지시).
