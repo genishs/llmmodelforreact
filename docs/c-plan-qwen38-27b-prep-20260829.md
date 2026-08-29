@@ -186,3 +186,57 @@ gfx1151 wave32/64 금지 이력과 별개로, 지금은 **torch 버전 자체가
 ### 본런 승인 대기
 PM 지시대로 본런은 착수하지 않고 대기. 8-step 스모크 PASS + s/step/GTT 실측치를 위
 결과와 함께 보고.
+
+## 6) 채점 경로 전환 — GGUF 불가, HF/PyTorch(`eval_hard_tsc.py`)로 (PM 지시, 2026-08-30)
+
+PM이 학습 중 미리 확인: 우리 llama.cpp(5f55650, 2026-07-30)의 `convert_hf_to_gguf.py`에
+`qwen3_5` 언급 0건 — 변환기가 이 아키텍처를 모른다. llama.cpp 업데이트는 캠페인 중 리스크
+대비 이득이 없어 보류(B안 채점을 몇 시간 전 정상 수행한 툴체인), 배포용 GGUF는 캠페인
+종료 후 별건. 대신 `scripts/eval_hard_tsc.py`(HF/PyTorch, `--quant hqq` 지원, 7B/14B/32B
+계열 전례 있음)로 어댑터 유/무를 **같은 파이프라인 안에서** 비교.
+
+### 🔴 사전 점검(GPU 미사용, 학습 중 코드 리뷰)에서 발견한 것
+- `eval_hard_tsc.py`가 `train_directml.load_hqq_onthefly`를 그대로 import해서 쓴다 —
+  즉 오늘 반영한 prefix remap(VLM 체크포인트 텐서명 매핑) 수정이 **채점 경로에도 자동
+  적용된다**(별도 수정 불필요, 코드 확인으로 검증).
+- `gen_batch_utils.build_prompt`는 모델의 chat_template을 안 쓰고 고정
+  `### Instruction/### Input/### Response` 포맷만 쓴다 — Qwen3.8-27B의 복잡한 멀티모달
+  Jinja 템플릿과 무관, 학습 데이터 포맷과 동일 계열이라 호환 문제 없음.
+- **🔴 PM 계획의 전제 하나가 실제 코드와 달랐다**: "`--adapter` 인자만 제거하면 base단독
+  채점"이라 하셨으나, 실제로는 `--adapter required=True` + `PeftModel.from_pretrained`
+  무조건 호출이라 인자를 빼면 argparse 에러로 즉시 죽는다. **수정 완료**(커밋
+  `3d4502e`): `--adapter` 기본값 `""`로 선택화, 비어있으면 PEFT 래핑 스킵하고 base
+  단독 반환. 기존 어댑터 지정 경로는 완전 동일(회귀 없음).
+- ⚠️ **아직 검증 안 된 것**: `model.generate()`가 이 하이브리드(게이트 선형어텐션+완전어텐션)
+  아키텍처에서 실제로 동작하는지는 이번 세션에서 forward/backward만 검증했지 자기회귀
+  생성(캐시 처리)은 아직 한 번도 실행해본 적이 없다. **1태스크 스모크가 속도 측정만이
+  아니라 이 경로의 최초 정합성 검증이기도 하다** — PASS 못 하면 그 자체가 중요한 신호.
+
+### 준비된 실행 커맨드 (GPU 착수는 학습 완료 후, PM 지시대로 지금은 실행 안 함)
+```
+# 1) 스모크: 1태스크(held-out 중 최단, ho-select)로 s/step·생성정상여부 실측
+python scripts/eval_hard_tsc.py \
+  --base "/run/media/user/새 볼륨/ai_model/models/base/qwen3.8-27b" \
+  --adapter models/qwen38-27b-react-lora-v1 \
+  --quant hqq --hqq-nbits 4 --hqq-group-size 64 \
+  --heldout --only ho-select --max-new 4096 \
+  --label qwen38-27b-smoke-ho-select
+
+# 2) 본채점 — 어댑터 있음
+python scripts/eval_hard_tsc.py \
+  --base "/run/media/user/새 볼륨/ai_model/models/base/qwen3.8-27b" \
+  --adapter models/qwen38-27b-react-lora-v1 \
+  --quant hqq --hqq-nbits 4 --hqq-group-size 64 \
+  --heldout --max-new 4096 \
+  --label qwen38-27b-react-v1-hqq4-mn4096
+
+# 3) 본채점 — 어댑터 없음(base 단독, No-LoRA)
+python scripts/eval_hard_tsc.py \
+  --base "/run/media/user/새 볼륨/ai_model/models/base/qwen3.8-27b" \
+  --quant hqq --hqq-nbits 4 --hqq-group-size 64 \
+  --heldout --max-new 4096 \
+  --label qwen38-27b-BASE-noLoRA-hqq4-mn4096
+```
+🔴 **주의(PM 지시)**: 이 점수는 llama.cpp 경로 기존 점수(72B 64.7%·123B 12.2%·141B 10.7%·
+7B 70.5%)와 **직접 비교 불가**(파이프라인 다름). 표기 시 경로 명기, 비교는 이 3건
+안에서(어댑터 유 vs 무)만.
