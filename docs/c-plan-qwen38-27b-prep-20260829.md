@@ -125,3 +125,64 @@ gfx1151 wave32/64 금지 이력과 별개로, 지금은 **torch 버전 자체가
 
 ## 커밋
 로컬 커밋만(push 안 함, 개인 학습 레포).
+
+## 5) GPU 착수 — 8-step 스모크 결과 (2026-08-30, 오선생, PM 지시로 착수)
+
+### 사전 코드 변경(GPU 착수 직전, 로컬 커밋)
+- `e102b13`: 문서화만 해뒀던 prefix remap을 실제로 `train_directml.py`에 반영
+  (`remap_checkpoint_key`/`build_checkpoint_key_maps`). CPU 합성 체크포인트(멀티샤드
+  index.json, 8레이어 하이브리드, 가짜 vision/mtp 텐서 포함)로 실제 driver 함수를 import해
+  실행 검증 — `stream_load_to_device`는 레퍼런스와 logits 완전일치(max diff 0.0),
+  `load_hqq_onthefly`는 유한 출력. `build()` e2e(HQQ4bit+LoRA9종+forward+backward)도
+  76/76 유한 gradient. 기존 qwen2.5-coder-1.5b/7b로 identity매핑(no-op) 하위호환 재확인.
+- `build()`의 LoRA 부착검증을 `--lora-mlp` 전용에서 target_modules 전체로 확장(하나라도
+  안 붙으면 RuntimeError).
+- `795efce`/`31a6eef`: gradient checkpointing "요청"과 "실제 켜짐"을 분리해 로그로 확인
+  가능하게 함 + 서프릭스별 LoRA 부착개수(Counter) 로깅 추가. (`31a6eef`는 그 직전 커밋이
+  Edit 도구로 CRLF→LF를 깨뜨려 diff가 전체파일로 찍힌 것을 원복만 한 정정 커밋 — 내용변경 없음,
+  `tr -d '\r'` 비교로 확인.)
+
+### 1차 스모크 (`gpujob-c-smoke-20260830-023109`) — OOM으로 실패, 원인 규명됨
+- HQQ 스트리밍 양자화 496 Linear 전부 성공(819.3s), LoRA 9종 타깃 전부 실제 부착 확인(304모듈:
+  q/k/v/o_proj 16개씩, in_proj_a/b/qkv/z·out_proj 48개씩 — full_attention_interval=4 비율과
+  정확히 일치). 여기까지는 완전히 정상.
+- 첫 forward 도중(MLP down_proj) `torch.OutOfMemoryError: HIP out of memory. Tried to
+  allocate 170.00 MiB ... 55.36 GiB is allocated by PyTorch`로 죽음. **wedge 아님** —
+  `wedge_check`가 "no amdgpu wedge/reset messages ... GPU looks healthy" 확인, 클린한
+  OOM 예외.
+- **원인**: 스모크 커맨드에 `--grad-ckpt`를 안 넘김. `prepare_model_for_kbit_training(
+  use_gradient_checkpointing=False)`로 호출돼 gradient checkpointing이 꺼진 채 돌았고,
+  HQQ가 forward마다 4bit→bf16으로 되푸는 텐서를 grad-ckpt 없이는 backward를 위해 64레이어
+  깊이 내내 전부 살려둬야 해서 27B가 사실상 bf16 통짜(~54GB)로 상주 → OOM. Mixtral/123B
+  본런은 전부 `--grad-ckpt`를 명시했었는데(문서 확인) 이번 C안 최초 커맨드에서만 빠뜨림 —
+  내 실수, PM이 재확인.
+
+### 2차 스모크 (`gpujob-csmoke-20260830-025223`) — **PASS**
+- `--grad-ckpt` + `--setenv PYTORCH_ALLOC_CONF=expandable_segments:True`(gpu_job.sh 유닛
+  환경에 직접 주입, 호출측 export는 유닛에 전파 안 됨 확인) 적용.
+- `gradient checkpointing: 요청=True | 실제 켜짐 확인(is_gradient_checkpointing)=True` —
+  "설정했다"가 아니라 "켜졌다"를 로그로 직접 확인.
+- LoRA 부착 재확인: 총 304모듈, 서프릭스별 `{'in_proj_a': 48, 'in_proj_b': 48,
+  'in_proj_qkv': 48, 'in_proj_z': 48, 'k_proj': 16, 'o_proj': 16, 'out_proj': 48,
+  'q_proj': 16, 'v_proj': 16}` — 사전계산치(16×4 + 48×5=304)와 완전 일치.
+  trainable 47,521,792 / all(비양자화분) 14,768,242,176 = 0.3218%.
+- **8-step 전부 완주**, loss(avg8) 궤적 1.6301→1.5364→1.1745→0.8311→0.6094→0.7117→
+  0.6407→0.6225 (유한·전반적 하강, 6→7 소폭 반등은 8건짜리 accum 윈도우 노이즈로 정상 범위).
+  `[스모크 완료] 저장 생략. backward 정상 동작 확인됨.`
+- **s/step 실측**: step1 175.2s(MIOpen/컴포저블커널 최초 컴파일 오버헤드 포함, 로그에
+  `e_grid_desc_...` 컴파일 스팸 확인), step2-8 정상상태 평균 **168.17s/step**
+  (167.4~169.8 범위, 매우 안정적).
+- **GTT 실측**: step 실행 중 GPU 18.7GB(고정, 8스텝 내내 변화 없음 — A안처럼 스텝마다
+  점증하지 않음, MoE 옵티마이저 상태 누적 문제와 무관한 구조라 예상대로), 종료 후 47MB로
+  완전 반환. 56GB 캡 대비 **여유 37GB+** — 본런(78스텝) 내내 안전할 것으로 판단.
+- 커널 로그: wedge/reset 메시지 없음, GPU 정상.
+
+### 예상 소요 재산정(범위 아님 — 실측 기반)
+- 78스텝(첫스텝 컴파일 175.2s + 나머지 77스텝×168.17s) ≈ **3.65h**
+- 모델로드+HQQ양자화+세팅 ≈ **13.3분**
+- **본런 총 예상 ≈ 3.87시간** (당초 범위 3.25~7.6h 중 낙관치에 가까움 — fla 미설치
+  torch fallback의 실제 영향은 우려보다 작았음).
+
+### 본런 승인 대기
+PM 지시대로 본런은 착수하지 않고 대기. 8-step 스모크 PASS + s/step/GTT 실측치를 위
+결과와 함께 보고.
