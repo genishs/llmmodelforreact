@@ -263,7 +263,7 @@ def load_hqq_onthefly(model_path, device, compute_dtype, nbits=4, group_size=64,
             gc.collect()
             log(f"  {n_quant}/{len(targets)} Linear 양자화 완료 | RAM 가용 {ram_avail_gb():.1f}GB")
     torch.cuda.empty_cache()
-    log(f"  HQQ 스트리밍 치환 완료: Linear {n_quant}개 → HQQLinear(4bit), 총 {time.time()-t0:.1f}s")
+    log(f"  HQQ 스트리밍 치환 완료: Linear {n_quant}개 → HQQLinear({nbits}bit), 총 {time.time()-t0:.1f}s")
 
     model.tie_weights()
 
