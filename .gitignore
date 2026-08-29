@@ -64,3 +64,18 @@ package-lock.json
 
 # LAN 파일전송 임시 디렉토리 (대용량 어댑터/생성물 — git에 넣지 않음)
 comms/lan_xfer/
+
+# ── 어댑터·모델 가중치는 git 에 올리지 않는다 (2026-08-29, 두목 지시)
+#    "어댑터 등 크기가 큰 파일들은 외장하드를 직접 연결해주면 이동할 수 있으니
+#     git에 무리해서 올리려 하지 말자"
+#    정본 보관처 = 2TB USB 아카이브  "새 볼륨"/ai_model/models/adapters
+#    ⚠️ 파일을 지우는 것이 아니라 추적만 제외한다. 실물은 절대 삭제 금지.
+#    (best-adapters/**/*.safetensors 는 .gitattributes 로 LFS 추적 중 — 여기 제외 대상 아님)
+models/**/adapter_model.safetensors
+models/**/*.bin
+models/**/*.gguf
+models/**/tokenizer.json
+models/**/tokenizer.model
+models/**/optimizer.pt
+models/**/scheduler.pt
+models/base/
