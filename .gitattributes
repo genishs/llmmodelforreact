@@ -1,1 +1,5 @@
 best-adapters/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+
+# Windows 실행 파일은 CRLF 로 고정 (LF 면 cmd 가 오작동)
+*.bat text eol=crlf
+*.ps1 text eol=crlf

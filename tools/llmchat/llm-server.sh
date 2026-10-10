@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # llm.sh — 로컬 LLM 서버 켜기/끄기 (halo-ubuntu, Radeon 8060S / Vulkan)
 #
-#   ~/llm.sh start [모델별칭]      서버 켜기 (기본: q38, 이 PC 에서만)
+#   ~/llm.sh start [모델별칭]      서버 켜기 (기본: cn, 이 PC 에서만)
 #   ~/llm.sh start q38 lan          같은 망의 다른 PC 에서도 접속 (API 키 자동 생성·적용)
 #   ~/llm.sh stop               서버 끄기
 #   ~/llm.sh status             상태·속도
@@ -23,12 +23,13 @@ LOG=/home/user/gpu_jobs/logs/llm-server.log
 
 declare -A MODEL=(
   [q38]="$GG/Qwen3.8-27B-UD-Q6_K.gguf"                  # Qwen3.8-27B (2026-08) dense, 22GB
+  [cn]="$GG/Qwen_Qwen3-Coder-Next-Q4_K_M.gguf"          # Qwen3-Coder-Next 80B-A3B (2026-01) MoE, 48.7GB — 코딩 에이전트용
   [c7]="$GG/qwen2.5-coder-7b-q8_0.gguf"                 # Qwen2.5-Coder-7B (2024-09), 7.5GB
 )
 # 컨텍스트: Qwen3.8 은 64레이어 중 48개가 linear_attention 이라 KV 가 작다 → 넉넉히 잡아도 된다
-declare -A CTX=( [q38]=65536 [c7]=16384 )
+declare -A CTX=( [q38]=65536 [cn]=65536 [c7]=16384 )
 
-cmd="${1:-status}"; key="${2:-q38}"; net="${3:-local}"
+cmd="${1:-status}"; key="${2:-cn}"; net="${3:-local}"
 # LAN 모드: 같은 망의 다른 PC 에서 접속. llama-server 는 기본 인증이 없으므로 API 키를 반드시 건다.
 KEYFILE=/home/user/.config/llm-api-key
 HOST=127.0.0.1; KEYARG=()
@@ -67,7 +68,7 @@ case "$cmd" in
   stop)   systemctl --user stop "$UNIT" 2>/dev/null; echo "꺼짐" ;;
   status)
     if systemctl --user is-active --quiet "$UNIT"; then
-      echo "켜짐: $(grep -oE 'alias [^ ]+' /proc/$(pgrep -x llama-server | head -1)/cmdline 2>/dev/null | head -1) · http://127.0.0.1:$PORT"
+      echo "켜짐: 모델 $(tr '\0' ' ' < /proc/$(pgrep -x llama-server | head -1)/cmdline 2>/dev/null | grep -oE -- '--alias [^ ]+' | cut -d' ' -f2) · 포트 $PORT"
       grep -aE 'eval time|tokens per second' "$LOG" | tail -2
     else echo "꺼짐"; fi
     echo "GTT $(awk '{printf "%.1f",$1/1073741824}' /sys/class/drm/card*/device/mem_info_gtt_used | head -1)G / 56G"
