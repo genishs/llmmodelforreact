@@ -1,5 +1,6 @@
 best-adapters/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
 
-# Windows 실행 파일은 CRLF 로 고정 (LF 면 cmd 가 오작동)
-*.bat text eol=crlf
-*.ps1 text eol=crlf
+# Windows 실행 파일은 바이트 그대로 저장한다(-text). eol=crlf 는 '체크아웃 때만' CRLF 로 바꾸고
+# 저장소엔 LF 로 넣기 때문에, raw.githubusercontent 로 받으면 LF 가 와서 .bat 이 오작동한다.
+*.bat -text
+*.ps1 -text
